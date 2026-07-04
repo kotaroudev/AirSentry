@@ -1,9 +1,15 @@
+import argparse
 import os
 import sys
-import argparse
+import time
 import traceback
-from src.infrastructure.hardware_reader import HardwareReader
+
+from src.core.device_registry import DeviceRegistry
+from src.core.event_bus import EventBus
 from src.core.mode_descriptions import MODE_DESCRIPTIONS
+from src.infrastructure.hardware_reader import HardwareReader
+from src.infrastructure.wifi_mode_controller import WiFiModeController
+from src.infrastructure.wifi_monitor_capture import WiFiMonitorCapture
 
 # 🎨 ANSI Terminal Color Palette
 CLR_RED = "\033[31m"
@@ -117,6 +123,235 @@ def print_interfaces_report(wifi_dict: dict, bt_info: dict):
     print("=== End of Hardware Discovery Report ===\n")
 
 
+def test_wifi_monitor_mode(interface: str) -> bool:
+    """
+    Safely tests WiFi monitor mode activation and restoration.
+    This does not start packet capture.
+    """
+    print("\n=== AirSentry WiFi Monitor Mode Test ===\n")
+    print(f"[*] Target WiFi interface: {interface}")
+
+    controller = WiFiModeController(interface)
+
+    original_type = controller.get_interface_type()
+    original_state = controller.get_interface_operstate()
+
+    print(f"[*] Current interface type : {original_type or 'unknown'}")
+    print(f"[*] Current interface state: {original_state or 'unknown'}")
+
+    if original_type == "monitor":
+        print(
+            f"{CLR_YELLOW}[INFO] Interface is already in monitor mode. "
+            f"AirSentry will still attempt to restore it to managed mode at the end.{CLR_RESET}"
+        )
+
+    print(f"\n[*] Enabling monitor mode on {interface}...")
+
+    enabled = controller.enable_monitor_mode()
+
+    if not enabled:
+        print(
+            f"{CLR_RED}[❌ ERROR] Failed to enable monitor mode on {interface}.{CLR_RESET}"
+        )
+        print(f"{CLR_YELLOW}[INFO] Attempting to restore managed mode...{CLR_RESET}")
+        controller.restore_managed_mode()
+        return False
+
+    print(f"{CLR_GREEN}[✓] SUCCESS: {interface} is now in monitor mode.{CLR_RESET}")
+    print(
+        "    -> Description: Monitor Mode (Passive Air Sniffing)\n"
+        "    -> Auditing Scope: Analyzes nearby WiFi frames traveling through the air, "
+        "depending on hardware, driver, channel, and permissions."
+    )
+
+    input(
+        f"\n{CLR_YELLOW}Press ENTER to restore {interface} back to managed mode...{CLR_RESET}"
+    )
+
+    print(f"\n[*] Restoring {interface} back to managed mode...")
+
+    restored = controller.restore_managed_mode()
+
+    if not restored:
+        print(
+            f"{CLR_RED}[❌ ERROR] Failed to restore {interface} to managed mode.{CLR_RESET}"
+        )
+        print(
+            f"{CLR_YELLOW}[WARNING] You may need to manually reconnect WiFi or run:\n"
+            f"  sudo ip link set {interface} down\n"
+            f"  sudo iw dev {interface} set type managed\n"
+            f"  sudo ip link set {interface} up{CLR_RESET}"
+        )
+        return False
+
+    print(f"{CLR_GREEN}[✓] SUCCESS: {interface} restored to managed mode.{CLR_RESET}")
+    print("\n=== Monitor Mode Test Completed ===")
+    return True
+
+
+def test_wifi_monitor_capture(interface: str, duration_seconds: int = 15) -> bool:
+    """
+    Tests the full WiFi monitor capture pipeline.
+
+    Flow:
+    monitor mode -> Scapy capture -> WiFiPacketParser -> EventBus -> DeviceRegistry
+    """
+    print("\n=== AirSentry WiFi Monitor Capture Test ===\n")
+    print(f"[*] Target WiFi interface: {interface}")
+    print(f"[*] Capture duration     : {duration_seconds} seconds")
+
+    controller = WiFiModeController(interface)
+    event_bus = EventBus()
+    registry = DeviceRegistry()
+
+    event_bus.subscribe(registry.ingest)
+
+    capture = WiFiMonitorCapture(
+        interface=controller.monitor_interface,
+        event_bus=event_bus,
+        store_raw_bytes=False,
+    )
+    try:
+        print(f"\n[*] Creating dedicated monitor interface from {interface}...")
+
+        if not controller.create_monitor_interface():
+            print(
+                f"{CLR_RED}[❌ ERROR] Failed to create monitor interface "
+                f"{controller.monitor_interface} from {interface}.{CLR_RESET}"
+            )
+            return False
+
+        print(
+            f"{CLR_GREEN}[✓] SUCCESS: Monitor interface "
+            f"{controller.monitor_interface} created successfully.{CLR_RESET}"
+        )
+
+        print("\n[*] Starting WiFi monitor capture...")
+        capture.start()
+
+        start_time = time.time()
+        last_count = 0
+
+        while time.time() - start_time < duration_seconds:
+            processed = event_bus.drain(max_events=100)
+            last_count += processed
+            time.sleep(0.25)
+
+        capture.stop()
+
+        # Drain remaining events after stopping capture.
+        last_count += event_bus.drain(max_events=500)
+
+        devices = registry.all_devices()
+
+        print("\n=== Capture Summary ===")
+        print(f"Raw Packets Seen : {capture.raw_packet_count}")
+        print(f"Parsed Events    : {capture.parsed_event_count}")
+        print(f"Bus Events       : {last_count}")
+        print(f"Parser Errors    : {capture.parser_error_count}")
+        print(f"Devices Seen     : {len(devices)}")
+
+        if capture.last_packet_summary:
+            print(f"Last Packet      : {capture.last_packet_summary}")
+
+        if capture.last_parser_error:
+            print(f"Last Parser Error: {capture.last_parser_error}")
+
+        print()
+
+        if not devices:
+            print(
+                f"{CLR_YELLOW}[INFO] No WiFi devices were parsed during this short capture window. "
+                f"Try increasing duration, changing channel, or moving near active WiFi traffic.{CLR_RESET}"
+            )
+        else:
+            for index, device in enumerate(devices[:20], start=1):
+                identity = device.identity
+                avg_wifi_rssi = device.avg_wifi_rssi()
+
+                print(f"[{index}] Device ID      : {device.device_id}")
+                print(f"    MAC              : {identity.primary_mac or 'unknown'}")
+                print(
+                    f"    Type             : {identity.suspected_device_type or 'unknown'}"
+                )
+                print(
+                    f"    Protocols        : {', '.join(sorted(identity.protocols_seen)) or 'unknown'}"
+                )
+                print(f"    Packet Count     : {device.packet_count}")
+                print(
+                    f"    Avg WiFi RSSI    : "
+                    f"{round(avg_wifi_rssi, 2) if avg_wifi_rssi is not None else 'unknown'}"
+                )
+
+                if identity.ssids_probed:
+                    print(
+                        f"    Probed SSIDs     : {', '.join(sorted(identity.ssids_probed))}"
+                    )
+
+                if device.risk_notes:
+                    print(f"    Risk Notes       : {'; '.join(device.risk_notes)}")
+
+                wifi_security = device.extra.get("wifi_security")
+
+                if wifi_security:
+                    print(
+                        f"    Security         : "
+                        f"{', '.join(wifi_security.get('security', [])) or 'unknown'}"
+                    )
+                    print(
+                        f"    Pairwise Cipher  : "
+                        f"{', '.join(wifi_security.get('pairwise_ciphers', [])) or 'unknown'}"
+                    )
+                    print(
+                        f"    AKM              : "
+                        f"{', '.join(wifi_security.get('akm_suites', [])) or 'unknown'}"
+                    )
+                    print(f"    WPS              : {wifi_security.get('wps')}")
+
+                if device.evidence:
+                    print(f"    Last Evidence    : {device.evidence[-1].description}")
+
+                if device.last_behavior:
+                    print(
+                        f"    Last Behavior    : "
+                        f"[{device.last_behavior.category}] {device.last_behavior.description}"
+                    )
+
+                print()
+
+        return True
+
+    except KeyboardInterrupt:
+        print(f"\n{CLR_YELLOW}[-] Capture interrupted by user.{CLR_RESET}")
+        return False
+
+    except Exception as e:
+        print(f"{CLR_RED}[❌ ERROR] WiFi capture test failed: {e}{CLR_RESET}")
+        return False
+
+    finally:
+        print(f"\n[*] Stopping capture and restoring {interface} to managed mode...")
+        capture.stop()
+
+        if controller.delete_monitor_interface():
+            print(
+                f"{CLR_GREEN}[✓] SUCCESS: Monitor interface "
+                f"{controller.monitor_interface} removed successfully.{CLR_RESET}"
+            )
+        else:
+            print(
+                f"{CLR_RED}[❌ ERROR] Failed to restore {interface} to managed mode.{CLR_RESET}"
+            )
+            print(
+                f"{CLR_YELLOW}[WARNING] Manual recovery may be required:\n"
+                f"  sudo ip link set {interface} down\n"
+                f"  sudo iw dev {interface} set type managed\n"
+                f"  sudo ip link set {interface} up{CLR_RESET}"
+            )
+
+        print("\n=== WiFi Monitor Capture Test Completed ===")
+
+
 def main():
     # 🚨 Mandatory Root/Raw Sockets Validation
     if os.getuid() != 0:
@@ -141,6 +376,16 @@ def main():
         "--interfaces",
         action="store_true",
         help="Lists detected Wi-Fi and Bluetooth interfaces, capabilities, and recommended tools, then exits",
+    )
+    parser.add_argument(
+        "--test-monitor",
+        action="store_true",
+        help="Tests enabling WiFi monitor mode and restoring managed mode, then exits",
+    )
+    parser.add_argument(
+        "--test-wifi-capture",
+        action="store_true",
+        help="Tests WiFi monitor capture, parses packets, updates the device registry, and restores managed mode",
     )
     args = parser.parse_args()
 
@@ -183,6 +428,46 @@ def main():
             sys.exit(1)
 
         sys.exit(0)
+    if args.test_monitor:
+        if not has_wifi or not default_wifi_interface:
+            print(
+                f"{CLR_RED}[❌ ERROR] No WiFi interface detected. Cannot test monitor mode.{CLR_RESET}"
+            )
+            sys.exit(1)
+
+        if (
+            wifi_dict.get(default_wifi_interface, {}).get("monitor")
+            != HardwareReader.CAP_YES
+        ):
+            print(
+                f"{CLR_RED}[❌ ERROR] {default_wifi_interface} does not report monitor mode support. "
+                f"Cannot safely continue.{CLR_RESET}"
+            )
+            sys.exit(1)
+
+        success = test_wifi_monitor_mode(default_wifi_interface)
+        sys.exit(0 if success else 1)
+
+    if args.test_wifi_capture:
+        if not has_wifi or not default_wifi_interface:
+            print(
+                f"{CLR_RED}[❌ ERROR] No WiFi interface detected. Cannot test WiFi capture.{CLR_RESET}"
+            )
+            sys.exit(1)
+
+        if (
+            wifi_dict.get(default_wifi_interface, {}).get("monitor")
+            != HardwareReader.CAP_YES
+        ):
+            print(
+                f"{CLR_RED}[❌ ERROR] {default_wifi_interface} does not report monitor mode support. "
+                f"Cannot safely continue.{CLR_RESET}"
+            )
+            sys.exit(1)
+
+        success = test_wifi_monitor_capture(default_wifi_interface)
+        sys.exit(0 if success else 1)
+
     default_bt_interface = bt_info["interface"]
     bt_supports_ble = (
         bt_info.get("external_ble") == HardwareReader.CAP_YES
@@ -230,7 +515,7 @@ def main():
             # Optimal Bluetooth Mode Selection
             chosen_bt_mode = "BLE" if bt_supports_ble else "HCI"
 
-            print(f"\n[*] Provisioning hardware automatically...")
+            print("\n[*] Provisioning hardware automatically...")
             if has_wifi:
                 print_chip_success("WIFI", default_wifi_interface, chosen_wifi_mode)
             if has_bluetooth:
@@ -244,7 +529,7 @@ def main():
 
             # 1. Wi-Fi Interface Menu Selection
             if has_wifi:
-                print(f"\n--- Detected Wi-Fi Interfaces ---")
+                print("\n--- Detected Wi-Fi Interfaces ---")
                 print(f"  [1] {default_wifi_interface} [Current System Default]")
                 print(
                     f"      > Capabilities: Monitor: {'YES' if wifi_supports_monitor else 'NO'}, Promiscuous: {'YES' if wifi_supports_promiscuo else 'NO'}, Managed: YES"
@@ -254,7 +539,7 @@ def main():
 
                 # Wi-Fi Mode Selection Menu
                 print(
-                    f"\nSelect the operating mode for the Wi-Fi interface (Recommended: MONITOR):"
+                    "\nSelect the operating mode for the Wi-Fi interface (Recommended: MONITOR):"
                 )
                 print(
                     f"  [1] MONITOR   -> {MODE_DESCRIPTIONS['WIFI_MONITOR']['auditing']}"
@@ -285,7 +570,7 @@ def main():
 
             # 2. Bluetooth Interface Menu Selection
             if has_bluetooth:
-                print(f"\n--- Detected Bluetooth Interfaces ---")
+                print("\n--- Detected Bluetooth Interfaces ---")
                 print(f"  [1] {default_bt_interface}")
                 ble_label = "NO"
                 if bt_info.get("external_ble") == HardwareReader.CAP_YES:
@@ -303,7 +588,7 @@ def main():
                         f"For full BLE sniffing power, dedicated external hardware is recommended.{CLR_RESET}"
                     )
 
-                print(f"\nSelect the operating mode for the Bluetooth chip:")
+                print("\nSelect the operating mode for the Bluetooth chip:")
                 print(f"  [1] HCI -> {MODE_DESCRIPTIONS['BT_HCI']['auditing']}")
                 print(f"  [2] BLE -> {MODE_DESCRIPTIONS['BT_BLE']['auditing']}")
 
@@ -320,7 +605,7 @@ def main():
                     final_bt_mode = "HCI"
 
             # Launching chips based on explicit user choices
-            print(f"\n[*] Applying custom hardware profiles...")
+            print("\n[*] Applying custom hardware profiles...")
             if has_wifi:
                 print_chip_success("WIFI", default_wifi_interface, final_wifi_mode)
             if has_bluetooth:
@@ -341,7 +626,7 @@ def main():
         stack_trace = traceback.extract_tb(ex_tb)
         last_fault = stack_trace[-1]
 
-        print(f"\n📝 FORENSIC ERROR DOSSIER FOR ANALYSIS:")
+        print("\n📝 FORENSIC ERROR DOSSIER FOR ANALYSIS:")
         print(f"  • Exception Type : {ex_type.__name__}")
         print(f"  • Error Message  : {e}")
         print(f"  • Target File    : {last_fault.filename}")
