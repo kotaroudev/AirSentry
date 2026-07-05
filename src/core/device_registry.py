@@ -127,6 +127,38 @@ class DeviceRegistry:
         if event.event_type == "beacon" and security_profile:
             profile.extra["wifi_security"] = security_profile
 
+        if event.protocol == "WIFI":
+            wifi_last = profile.extra.get("wifi_last", {})
+
+            profile.extra["wifi_last"] = {
+                "ssid": event.ssid or wifi_last.get("ssid"),
+                "channel": event.signal.channel
+                if event.signal.channel is not None
+                else wifi_last.get("channel"),
+                "band": event.signal.band or wifi_last.get("band"),
+                "rssi": event.signal.rssi
+                if event.signal.rssi is not None
+                else wifi_last.get("rssi"),
+                "event_type": event.event_type or wifi_last.get("event_type"),
+            }
+
+        if event.event_type in {"beacon", "probe_response"}:
+            wifi_air_profile = profile.extra.get("wifi_air_profile", {})
+
+            profile.extra["wifi_air_profile"] = {
+                "ssid": event.ssid or wifi_air_profile.get("ssid"),
+                "channel": event.signal.channel
+                if event.signal.channel is not None
+                else wifi_air_profile.get("channel"),
+                "band": event.signal.band or wifi_air_profile.get("band"),
+                "rssi": event.signal.rssi
+                if event.signal.rssi is not None
+                else wifi_air_profile.get("rssi"),
+                "security": event.parsed_fields.get("security_profile")
+                or wifi_air_profile.get("security"),
+                "last_event_type": event.event_type,
+            }
+
         self._infer_basic_device_type(profile, event)
 
     def _infer_basic_device_type(

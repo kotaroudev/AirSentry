@@ -3,13 +3,19 @@ import os
 import sys
 import time
 import traceback
+from threading import Event, Thread
 
+from src.core.capture_context import CaptureContext, CaptureInterfaceContext
 from src.core.device_registry import DeviceRegistry
 from src.core.event_bus import EventBus
 from src.core.mode_descriptions import MODE_DESCRIPTIONS
 from src.infrastructure.hardware_reader import HardwareReader
+from src.infrastructure.wifi_channel_hopper import WiFiChannelHopper
 from src.infrastructure.wifi_mode_controller import WiFiModeController
 from src.infrastructure.wifi_monitor_capture import WiFiMonitorCapture
+from src.presentation.live_dashboard import LiveDashboard
+from src.presentation.smart_packet_stream_model import SmartPacketStreamModel
+from src.presentation.wifi_view_model import WiFiViewModel
 
 # 🎨 ANSI Terminal Color Palette
 CLR_RED = "\033[31m"
@@ -123,6 +129,11 @@ def print_interfaces_report(wifi_dict: dict, bt_info: dict):
     print("=== End of Hardware Discovery Report ===\n")
 
 
+def get_wifi_interface_context_data(interface: str) -> dict:
+    wifi_interfaces = HardwareReader.list_wifi_interfaces()
+    return wifi_interfaces.get(interface, {})
+
+
 def test_wifi_monitor_mode(interface: str) -> bool:
     """
     Safely tests WiFi monitor mode activation and restoration.
@@ -196,15 +207,28 @@ def test_wifi_monitor_capture(interface: str, duration_seconds: int = 15) -> boo
     Flow:
     monitor mode -> Scapy capture -> WiFiPacketParser -> EventBus -> DeviceRegistry
     """
-    print("\n=== AirSentry WiFi Monitor Capture Test ===\n")
-    print(f"[*] Target WiFi interface: {interface}")
-    print(f"[*] Capture duration     : {duration_seconds} seconds")
-
     controller = WiFiModeController(interface)
     event_bus = EventBus()
     registry = DeviceRegistry()
+    packet_traces = []
 
     event_bus.subscribe(registry.ingest)
+
+    print("\n=== AirSentry WiFi Monitor Capture Test ===\n")
+    print(f"[*] Base WiFi Interface       : {interface}")
+    print("[*] Interface Role            : physical/base WiFi interface")
+    print(f"[*] Monitor Interface         : {controller.monitor_interface}")
+    print("[*] Monitor Interface Role    : temporary AirSentry capture interface")
+    print(f"[*] Capture duration          : {duration_seconds} seconds")
+
+    def collect_packet_trace(event):
+        trace = SmartPacketStreamModel.from_event(event)
+        packet_traces.append(trace)
+
+        if len(packet_traces) > 200:
+            del packet_traces[0 : len(packet_traces) - 200]
+
+    event_bus.subscribe(collect_packet_trace)
 
     capture = WiFiMonitorCapture(
         interface=controller.monitor_interface,
@@ -212,7 +236,10 @@ def test_wifi_monitor_capture(interface: str, duration_seconds: int = 15) -> boo
         store_raw_bytes=False,
     )
     try:
-        print(f"\n[*] Creating dedicated monitor interface from {interface}...")
+        print(
+            f"\n[*] Creating AirSentry monitor interface "
+            f"{controller.monitor_interface} from base interface {interface}..."
+        )
 
         if not controller.create_monitor_interface():
             print(
@@ -226,7 +253,9 @@ def test_wifi_monitor_capture(interface: str, duration_seconds: int = 15) -> boo
             f"{controller.monitor_interface} created successfully.{CLR_RESET}"
         )
 
-        print("\n[*] Starting WiFi monitor capture...")
+        print(
+            f"\n[*] Starting WiFi monitor capture on {controller.monitor_interface}..."
+        )
         capture.start()
 
         start_time = time.time()
@@ -243,6 +272,40 @@ def test_wifi_monitor_capture(interface: str, duration_seconds: int = 15) -> boo
         last_count += event_bus.drain(max_events=500)
 
         devices = registry.all_devices()
+
+        wifi_rows = WiFiViewModel.build_rows(devices)
+
+        print("\n=== WiFi Air Perimeter Preview ===")
+        print(
+            f"{'ROLE':<8} {'SSID':<28} {'MAC':<18} {'RSSI':<7} "
+            f"{'CH':<4} {'BAND':<6} {'SECURITY':<22} {'PKTS':<6}"
+        )
+
+        for row in wifi_rows[:20]:
+            ssid = row.ssid or "-"
+            rssi = round(row.rssi, 1) if row.rssi is not None else "-"
+            channel = row.channel or "-"
+            band = row.band or "-"
+            security = row.security or "unknown"
+
+            print(
+                f"{row.role:<8} {ssid[:27]:<28} {row.mac:<18} {str(rssi):<7} "
+                f"{str(channel):<4} {str(band):<6} {security[:21]:<22} {row.packet_count:<6}"
+            )
+
+        print("\n=== Smart Packet Stream Preview ===")
+        print(
+            f"{'TIME':<9} {'PROTO':<8} {'TYPE':<16} {'SRC MAC':<18} "
+            f"{'DST MAC':<18} {'LEN':<6} {'RSSI':<7} {'CH':<4} SUMMARY"
+        )
+
+        for trace in packet_traces[-25:]:
+            print(
+                f"{trace.timestamp:<9} {trace.protocol:<8} {trace.event_type[:15]:<16} "
+                f"{(trace.src_mac or '-'):<18} {(trace.dst_mac or '-'):<18} "
+                f"{str(trace.length or '-'):<6} {str(trace.rssi or '-'):<7} "
+                f"{str(trace.channel or '-'):<4} {trace.summary[:80]}"
+            )
 
         print("\n=== Capture Summary ===")
         print(f"Raw Packets Seen : {capture.raw_packet_count}")
@@ -330,7 +393,10 @@ def test_wifi_monitor_capture(interface: str, duration_seconds: int = 15) -> boo
         return False
 
     finally:
-        print(f"\n[*] Stopping capture and restoring {interface} to managed mode...")
+        print(
+            f"\n[*] Stopping capture and removing AirSentry monitor interface "
+            f"{controller.monitor_interface}..."
+        )
         capture.stop()
 
         if controller.delete_monitor_interface():
@@ -350,6 +416,189 @@ def test_wifi_monitor_capture(interface: str, duration_seconds: int = 15) -> boo
             )
 
         print("\n=== WiFi Monitor Capture Test Completed ===")
+
+
+def run_live_wifi_dashboard(interface: str) -> bool:
+    """
+    Runs the first real AirSentry live dashboard.
+
+    Flow:
+    base WiFi interface -> temporary monitor interface -> Scapy capture
+    -> WiFiPacketParser -> EventBus -> DeviceRegistry -> LiveDashboard
+    """
+    print("\n=== AirSentry Live Dashboard ===\n")
+
+    controller = WiFiModeController(interface)
+    event_bus = EventBus()
+    registry = DeviceRegistry()
+    packet_traces = []
+    stop_event = Event()
+
+    channel_hopper = WiFiChannelHopper(
+        controller=controller,
+        dwell_seconds=1.5,
+    )
+
+    wifi_context_data = get_wifi_interface_context_data(interface)
+
+    capture_context = CaptureContext(
+        profile_name="Air Perimeter / 802.11 Monitor",
+        profile_description=(
+            "Captures nearby WiFi activity: APs, clients, probes, beacons, "
+            "channels, RSSI and encryption metadata."
+        ),
+        base_wifi_interface=CaptureInterfaceContext(
+            name=interface,
+            role="physical/base WiFi interface",
+            mode="managed/base",
+            driver=wifi_context_data.get("driver"),
+            mac_address=wifi_context_data.get("mac_address"),
+        ),
+        capture_wifi_interface=CaptureInterfaceContext(
+            name=controller.monitor_interface,
+            role="temporary AirSentry monitor capture interface",
+            mode="monitor",
+            signal_power="per-device RSSI",
+            approximate_range="RSSI-based estimate only; exact meters are unreliable",
+        ),
+        visible_layers=[
+            "RadioTap metadata",
+            "802.11 management frames",
+            "802.11 control frames",
+            "802.11 data-frame metadata",
+        ],
+        visible_protocols=[
+            "IEEE 802.11",
+            "Beacon frames",
+            "Probe requests",
+            "Control frames",
+            "Data-frame metadata",
+            "WPA/WPA2/WPA3/WPS metadata",
+        ],
+        limitations=[
+            "A single WiFi adapter listens to one channel at a time.",
+            "Channel hopping improves coverage over time but may miss packets.",
+            "Protected WiFi payloads may be encrypted and not readable.",
+            "Internet connectivity may be interrupted on single-adapter systems.",
+            "Live mode keeps a rolling in-memory buffer only.",
+            "Use future --db <path> mode for persistent SQLite storage.",
+        ],
+        active_storage="memory-only",
+        channel_strategy=channel_hopper.summary(),
+        payload_visibility="encrypted/protected payloads are not decoded",
+    )
+
+    print(f"[*] Base WiFi Interface       : {interface}")
+    print("[*] Interface Role            : physical/base WiFi interface")
+    print(f"[*] Monitor Interface         : {controller.monitor_interface}")
+    print("[*] Monitor Interface Role    : temporary AirSentry capture interface")
+    print("[*] Dashboard Mode            : live")
+
+    event_bus.subscribe(registry.ingest)
+
+    def collect_packet_trace(event):
+        trace = SmartPacketStreamModel.from_event(event)
+        packet_traces.append(trace)
+
+        if len(packet_traces) > 300:
+            del packet_traces[0 : len(packet_traces) - 300]
+
+    event_bus.subscribe(collect_packet_trace)
+
+    capture = WiFiMonitorCapture(
+        interface=controller.monitor_interface,
+        event_bus=event_bus,
+        store_raw_bytes=False,
+        channel_provider=lambda: channel_hopper.current_channel,
+    )
+
+    def process_events_loop() -> None:
+        while not stop_event.is_set():
+            event_bus.drain(max_events=250)
+
+    processor_thread = Thread(
+        target=process_events_loop,
+        name="airsentry-event-processor",
+        daemon=True,
+    )
+
+    try:
+        print(
+            f"\n[*] Creating AirSentry monitor interface "
+            f"{controller.monitor_interface} from base interface {interface}..."
+        )
+
+        if not controller.create_monitor_interface():
+            print(
+                f"{CLR_RED}[❌ ERROR] Failed to create monitor interface "
+                f"{controller.monitor_interface} from {interface}.{CLR_RESET}"
+            )
+            return False
+
+        print(
+            f"{CLR_GREEN}[✓] SUCCESS: Monitor interface "
+            f"{controller.monitor_interface} created successfully.{CLR_RESET}"
+        )
+
+        print(f"[*] Starting WiFi channel hopper: {channel_hopper.summary()}")
+        channel_hopper.start()
+
+        print(
+            f"\n[*] Starting WiFi monitor capture on {controller.monitor_interface}..."
+        )
+        capture.start()
+
+        print("[*] Starting AirSentry event processor...")
+        processor_thread.start()
+
+        print("[*] Launching live dashboard. Press Ctrl+C to exit.")
+
+        dashboard = LiveDashboard(
+            registry=registry,
+            packet_traces=packet_traces,
+            capture_context=capture_context,
+            refresh_per_second=4,
+        )
+
+        dashboard.run(should_stop=stop_event.is_set)
+
+        return True
+
+    except KeyboardInterrupt:
+        print(f"\n{CLR_YELLOW}[-] Live dashboard interrupted by user.{CLR_RESET}")
+        return True
+
+    except Exception as e:
+        print(f"{CLR_RED}[❌ ERROR] Live dashboard failed: {e}{CLR_RESET}")
+        return False
+
+    finally:
+        stop_event.set()
+
+        print(
+            f"\n[*] Stopping capture and removing AirSentry monitor interface "
+            f"{controller.monitor_interface}..."
+        )
+
+        channel_hopper.stop()
+        capture.stop()
+
+        if controller.delete_monitor_interface():
+            print(
+                f"{CLR_GREEN}[✓] SUCCESS: Monitor interface "
+                f"{controller.monitor_interface} removed successfully.{CLR_RESET}"
+            )
+        else:
+            print(
+                f"{CLR_RED}[❌ ERROR] Failed to remove monitor interface "
+                f"{controller.monitor_interface}.{CLR_RESET}"
+            )
+            print(
+                f"{CLR_YELLOW}[WARNING] Manual cleanup may be required:\n"
+                f"  sudo iw dev {controller.monitor_interface} del{CLR_RESET}"
+            )
+
+        print("\n=== AirSentry Live Dashboard Stopped ===")
 
 
 def main():
@@ -386,6 +635,11 @@ def main():
         "--test-wifi-capture",
         action="store_true",
         help="Tests WiFi monitor capture, parses packets, updates the device registry, and restores managed mode",
+    )
+    parser.add_argument(
+        "--live-dashboard",
+        action="store_true",
+        help="Runs the AirSentry live dashboard using the current WiFi monitor pipeline",
     )
     args = parser.parse_args()
 
@@ -466,6 +720,27 @@ def main():
             sys.exit(1)
 
         success = test_wifi_monitor_capture(default_wifi_interface)
+        sys.exit(0 if success else 1)
+
+    if args.live_dashboard:
+        if not has_wifi or not default_wifi_interface:
+            print(
+                f"{CLR_RED}[❌ ERROR] No WiFi interface detected. "
+                f"Cannot start live dashboard.{CLR_RESET}"
+            )
+            sys.exit(1)
+
+        if (
+            wifi_dict.get(default_wifi_interface, {}).get("monitor")
+            != HardwareReader.CAP_YES
+        ):
+            print(
+                f"{CLR_RED}[❌ ERROR] {default_wifi_interface} does not report "
+                f"monitor mode support. Cannot safely continue.{CLR_RESET}"
+            )
+            sys.exit(1)
+
+        success = run_live_wifi_dashboard(default_wifi_interface)
         sys.exit(0 if success else 1)
 
     default_bt_interface = bt_info["interface"]

@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from threading import Event, Thread
 from typing import Any
@@ -22,6 +23,7 @@ class WiFiMonitorCapture:
     interface: str
     event_bus: EventBus
     store_raw_bytes: bool = False
+    channel_provider: Callable[[], int | None] | None = None
 
     def __post_init__(self) -> None:
         self._stop_event = Event()
@@ -107,4 +109,22 @@ class WiFiMonitorCapture:
                     event.raw_bytes_hex = None
 
             self.parsed_event_count += 1
+            observed_channel = None
+
+            if self.channel_provider:
+                try:
+                    observed_channel = self.channel_provider()
+                except Exception:
+                    observed_channel = None
+
+            if event.signal.channel is None and observed_channel is not None:
+                event.signal.channel = observed_channel
+                event.signal.frequency_mhz = WiFiPacketParser._channel_to_frequency(
+                    observed_channel
+                )
+                event.signal.band = WiFiPacketParser._frequency_to_band(
+                    event.signal.frequency_mhz
+                )
+                event.extra["channel_source"] = "inferred_from_channel_hopper"
+
             self.event_bus.publish(event)
