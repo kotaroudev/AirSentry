@@ -6,6 +6,7 @@ from rich.table import Table
 from src.core.capture_context import CaptureContext
 from src.core.device_registry import DeviceRegistry
 from src.presentation.context_panel import ContextPanel
+from src.presentation.device_intelligence_view_model import DeviceIntelligenceViewModel
 from src.presentation.keyboard_reader import KeyboardReader
 from src.presentation.smart_packet_stream_model import SmartPacketTrace
 from src.presentation.wifi_view_model import WiFiViewModel
@@ -221,36 +222,89 @@ class LiveDashboard:
 
         return Panel(table, title="Smart Packet Stream")
 
-    def _render_device_intelligence(self, devices, limit: int = 8) -> Panel:
-        table = Table(expand=True)
+    def _render_device_intelligence(self, devices, limit: int = 4) -> Panel:
+        items = DeviceIntelligenceViewModel.build_items(devices)
 
-        table.add_column("Device", no_wrap=True)
-        table.add_column("Type")
-        table.add_column("Pkts", justify="right")
-        table.add_column("RSSI", justify="right")
-        table.add_column("Last Behavior")
-
-        sorted_devices = sorted(
-            devices,
-            key=lambda device: device.packet_count,
-            reverse=True,
-        )
-
-        for device in sorted_devices[:limit]:
-            rssi = device.avg_wifi_rssi()
-            behavior = "-"
-
-            if device.last_behavior:
-                behavior = (
-                    f"[{device.last_behavior.category}] {device.last_behavior.title}"
-                )
-
-            table.add_row(
-                device.identity.primary_mac or device.device_id,
-                device.identity.suspected_device_type or "unknown",
-                str(device.packet_count),
-                f"{rssi:.1f}" if rssi is not None else "-",
-                behavior[:90],
+        if not items:
+            return Panel(
+                "No devices have been identified yet.",
+                title="Device Intelligence",
             )
 
-        return Panel(table, title="Device Intelligence Preview")
+        group_items = []
+
+        for item in items[:limit]:
+            table = Table.grid(expand=True)
+            table.add_column(ratio=1)
+            table.add_column(ratio=2)
+
+            table.add_row("[bold]Device[/bold]", item.title)
+            table.add_row("[bold]Role[/bold]", item.role)
+            table.add_row("[bold]MAC[/bold]", item.mac or "unknown")
+            table.add_row(
+                "[bold]IP addresses[/bold]",
+                ", ".join(item.ip_addresses) if item.ip_addresses else "not observed",
+            )
+            table.add_row(
+                "[bold]Hostnames[/bold]",
+                ", ".join(item.hostnames) if item.hostnames else "not observed",
+            )
+            table.add_row(
+                "[bold]Vendors[/bold]",
+                ", ".join(item.vendors) if item.vendors else "unknown",
+            )
+            table.add_row(
+                "[bold]Protocols seen[/bold]",
+                ", ".join(item.protocols) if item.protocols else "unknown",
+            )
+            table.add_row(
+                "[bold]Signal[/bold]",
+                f"{item.avg_wifi_rssi:.1f} dBm ({item.proximity})"
+                if item.avg_wifi_rssi is not None
+                else "unknown",
+            )
+            table.add_row("[bold]Packets[/bold]", str(item.packet_count))
+
+            if item.ssids_probed:
+                table.add_row("[bold]SSIDs probed[/bold]", ", ".join(item.ssids_probed))
+
+            if item.services:
+                table.add_row("[bold]Services[/bold]", ", ".join(item.services))
+
+            if item.related_devices:
+                table.add_row(
+                    "[bold]Related devices[/bold]",
+                    ", ".join(item.related_devices),
+                )
+
+            behavior_lines = []
+
+            for behavior in item.recent_behaviors[-5:]:
+                behavior_lines.append(
+                    f"[{behavior.category}] {behavior.title}: {behavior.description}"
+                )
+
+            if not behavior_lines:
+                behavior_lines.append("No behavior timeline yet.")
+
+            table.add_row("[bold]Recent behaviors[/bold]", "\n".join(behavior_lines))
+
+            if item.risk_notes:
+                table.add_row("[bold]Risk notes[/bold]", "\n".join(item.risk_notes))
+
+            if item.identity_notes:
+                table.add_row(
+                    "[bold]Identity notes[/bold]", "\n".join(item.identity_notes)
+                )
+
+            group_items.append(
+                Panel(
+                    table,
+                    title=f"{item.title} | {item.role}",
+                )
+            )
+
+        return Panel(
+            Group(*group_items),
+            title="Device Intelligence",
+        )

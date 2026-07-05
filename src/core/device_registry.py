@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 
+from src.core.mac_identity import guess_vendor, is_locally_administered_mac
 from src.core.models import (
     DeviceBehavior,
     DeviceProfile,
@@ -99,6 +100,15 @@ class DeviceRegistry:
         """
         if event.src_mac and not profile.identity.primary_mac:
             profile.identity.primary_mac = event.src_mac
+
+        if event.src_mac:
+            guessed_vendor = guess_vendor(event.src_mac)
+
+            if guessed_vendor:
+                profile.identity.vendors.add(guessed_vendor)
+
+            if is_locally_administered_mac(event.src_mac):
+                profile.identity.extra["mac_randomization"] = True
 
         bluetooth_address = event.extra.get("bluetooth_address")
         if bluetooth_address and not profile.identity.bluetooth_address:

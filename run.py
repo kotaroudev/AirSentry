@@ -641,6 +641,17 @@ def main():
         action="store_true",
         help="Runs the AirSentry live dashboard using the current WiFi monitor pipeline",
     )
+
+    parser.add_argument(
+        "--profile",
+        choices=["air", "local"],
+        default="air",
+        help=(
+            "Selects the AirSentry capture profile. "
+            "'air' uses 802.11 monitor mode. "
+            "'local' uses managed/promiscuous local network visibility."
+        ),
+    )
     args = parser.parse_args()
 
     print("=== AirSentry Framework Core | Initializing Environment ===")
@@ -723,6 +734,22 @@ def main():
         sys.exit(0 if success else 1)
 
     if args.live_dashboard:
+        if args.profile == "local":
+            print(
+                f"{CLR_YELLOW}[INFO] Local Network Visibility profile is planned next. "
+                f"It will capture ARP, DHCP, mDNS, SSDP, UPnP, DNS, LLMNR and NetBIOS "
+                f"from managed/promiscuous mode when available.{CLR_RESET}"
+            )
+            print(
+                f"{CLR_YELLOW}[INFO] For now, AirSentry defaults to the implemented "
+                f"Air Perimeter / 802.11 Monitor dashboard.{CLR_RESET}"
+            )
+            print(
+                f"{CLR_YELLOW}[INFO] Run without --profile or use --profile air "
+                f"to start the current live dashboard.{CLR_RESET}"
+            )
+            sys.exit(0)
+
         if not has_wifi or not default_wifi_interface:
             print(
                 f"{CLR_RED}[❌ ERROR] No WiFi interface detected. "
