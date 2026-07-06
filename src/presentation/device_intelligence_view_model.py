@@ -58,7 +58,12 @@ class DeviceIntelligenceViewModel:
     def _build_item(device: DeviceProfile) -> DeviceIntelligenceItem:
         identity = device.identity
 
-        mac = identity.primary_mac or device.device_id
+        mac = (
+            identity.primary_mac
+            or identity.bluetooth_address
+            or device.extra.get("bluetooth_address")
+            or device.device_id
+        )
         role = DeviceIntelligenceViewModel._infer_role(device)
 
         title = DeviceIntelligenceViewModel._build_title(device, role, mac)
@@ -116,19 +121,45 @@ class DeviceIntelligenceViewModel:
     def _build_title(device: DeviceProfile, role: str, mac: str) -> str:
         identity = device.identity
 
-        if identity.hostnames:
-            return sorted(identity.hostnames)[0]
+        wifi_air_profile = device.extra.get("wifi_air_profile") or {}
+        wifi_last = device.extra.get("wifi_last") or {}
 
-        if role == "AP":
-            wifi_air_profile = device.extra.get("wifi_air_profile") or {}
-            wifi_last = device.extra.get("wifi_last") or {}
-            ssid = wifi_air_profile.get("ssid") or wifi_last.get("ssid")
+        ssid = wifi_air_profile.get("ssid") or wifi_last.get("ssid")
 
-            if ssid:
-                return f"AP {ssid}"
+        if role == "AP" and ssid:
+            return f"AP {ssid}"
+
+        bluetooth_name = (
+            device.extra.get("bluetooth_name")
+            or device.extra.get("ble_name")
+            or device.extra.get("name")
+        )
+
+        if DeviceIntelligenceViewModel._is_meaningful_device_name(bluetooth_name):
+            return bluetooth_name
+
+        meaningful_hostnames = [
+            hostname
+            for hostname in sorted(identity.hostnames)
+            if DeviceIntelligenceViewModel._is_meaningful_device_name(hostname)
+        ]
+
+        if meaningful_hostnames:
+            return meaningful_hostnames[0]
 
         if identity.ssids_probed:
             return f"WiFi client probing {sorted(identity.ssids_probed)[0]}"
+
+        bluetooth_address = (
+            identity.bluetooth_address
+            or device.extra.get("bluetooth_address")
+            or device.extra.get("ble_address")
+        )
+
+        if role == "BLUETOOTH" and bluetooth_address:
+            return DeviceIntelligenceViewModel._display_address_as_device_name(
+                bluetooth_address
+            )
 
         if role == "CLIENT":
             return f"WiFi client {mac}"
@@ -136,7 +167,52 @@ class DeviceIntelligenceViewModel:
         if role == "STA":
             return f"WiFi station {mac}"
 
+        if bluetooth_address:
+            return DeviceIntelligenceViewModel._display_address_as_device_name(
+                bluetooth_address
+            )
+
         return f"{role} {mac}"
+
+    @staticmethod
+    def _is_meaningful_device_name(value: str | None) -> bool:
+        if not value:
+            return False
+
+        normalized = value.strip()
+
+        if not normalized:
+            return False
+
+        lowered = normalized.lower()
+
+        bad_prefixes = (
+            "addresstype:",
+            "address type:",
+            "rssi:",
+            "txpower:",
+            "legacypairing:",
+            "manufacturerdata",
+            "manufacturerdata.value",
+            "uuids:",
+            "uuid:",
+            "paired:",
+            "connected:",
+            "trusted:",
+            "blocked:",
+            "icon:",
+            "class:",
+            "modalias:",
+        )
+
+        if lowered.startswith(bad_prefixes):
+            return False
+
+        return True
+
+    @staticmethod
+    def _display_address_as_device_name(address: str) -> str:
+        return address.replace(":", "-").upper()
 
     @staticmethod
     def _infer_role(device: DeviceProfile) -> str:

@@ -1,4 +1,5 @@
 import textwrap
+import time
 
 from rich import box
 from rich.console import Group
@@ -45,6 +46,10 @@ class LiveDashboard:
         self.devices_per_page = 8
         self.selected_device_index = 0
         self.expanded_device_id = None
+        self.show_context_help = False
+        self._device_items_cache = []
+        self._device_items_cache_at = 0.0
+        self._device_items_cache_ttl = 0.75
 
         self.stream_page = 0
         self.stream_page_size = 20
@@ -92,10 +97,20 @@ class LiveDashboard:
             self.expanded_device_id = None
         elif key.lower() == "q":
             self.quit_requested = True
+        elif key.lower() == "h":
+            self.show_context_help = not self.show_context_help
 
     def _current_device_items(self):
+        now = time.monotonic()
+
+        if now - self._device_items_cache_at < self._device_items_cache_ttl:
+            return self._device_items_cache
+
         devices = self.registry.all_devices()
-        return DeviceIntelligenceViewModel.build_items(devices)
+        self._device_items_cache = DeviceIntelligenceViewModel.build_items(devices)
+        self._device_items_cache_at = now
+
+        return self._device_items_cache
 
     def _current_visible_device_items(self):
         items = self._current_device_items()
@@ -259,52 +274,57 @@ class LiveDashboard:
         return self.capture_context
 
     def _render(self):
-        devices = self.registry.all_devices()
-        wifi_rows = WiFiViewModel.build_rows(devices)
+        if self.show_context_help:
+            return Group(
+                self._render_navigation_help(),
+                ContextPanel.render(
+                    self._context_for_current_view(),
+                    f"{self.current_view.title()} Context",
+                ),
+            )
 
         if self.current_view == "wifi":
+            devices = self.registry.all_devices()
+            wifi_rows = WiFiViewModel.build_rows(devices)
+
             return Group(
-                ContextPanel.render(self.capture_context, "WiFi Air Perimeter"),
                 self._render_navigation_help(),
                 self._render_wifi_air_perimeter(wifi_rows, limit=24),
             )
 
         if self.current_view == "bluetooth":
+            devices = self.registry.all_devices()
             bluetooth_rows = BluetoothViewModel.build_rows(devices)
 
             return Group(
-                ContextPanel.render(
-                    self._context_for_view("Bluetooth Radar"),
-                    "Bluetooth Radar",
-                ),
                 self._render_navigation_help(),
                 self._render_bluetooth_radar(bluetooth_rows, limit=24),
             )
 
         if self.current_view == "stream":
             return Group(
-                ContextPanel.render(
-                    self._context_for_view("Smart Packet Stream"), "Smart Packet Stream"
-                ),
                 self._render_navigation_help(),
                 self._render_smart_packet_stream(limit=24),
             )
 
         if self.current_view == "devices":
+            devices = self.registry.all_devices()
+
             return Group(
-                ContextPanel.render(
-                    self._context_for_view("Device Intelligence"), "Device Intelligence"
-                ),
                 self._render_navigation_help(),
                 self._render_device_intelligence(devices, limit=18),
             )
 
+        devices = self.registry.all_devices()
+        wifi_rows = WiFiViewModel.build_rows(devices)
+        bluetooth_rows = BluetoothViewModel.build_rows(devices)
+
         return Group(
-            ContextPanel.render(self.capture_context, "Overview"),
             self._render_navigation_help(),
-            self._render_wifi_air_perimeter(wifi_rows, limit=12),
-            self._render_smart_packet_stream(limit=8),
-            self._render_device_intelligence(devices, limit=6),
+            self._render_wifi_air_perimeter(wifi_rows, limit=5),
+            self._render_bluetooth_radar(bluetooth_rows, limit=5),
+            self._render_smart_packet_stream(limit=5),
+            self._render_device_intelligence(devices, limit=5),
         )
 
     def _render_navigation_help(self) -> Panel:
@@ -312,7 +332,9 @@ class LiveDashboard:
             "[bold]Navigation[/bold]: "
             "[0] Overview  [1] WiFi  [2] Bluetooth  [3] Packet Stream  "
             "[4] Devices  [n] Next  [p] Previous  "
-            "[j/k] Select  [e] Expand  [r] Reset  [q] Quit",
+            "[j/k] Select  [e] Expand  [r] Reset  "
+            "[bold]h[/bold] Help  [q] Quit\n"
+            f"[bold]Context[/bold]: {self._compact_context_line()}",
             title=f"Current View: {self.current_view}",
         )
 
@@ -326,6 +348,74 @@ class LiveDashboard:
             "Exit: Ctrl+C",
             title="Session",
         )
+
+    def _compact_context_line(self) -> str:
+        base_wifi = self._interface_name(
+            getattr(self.capture_context, "base_wifi_interface", None),
+            "wlan0",
+        )
+        capture_wifi = self._interface_name(
+            getattr(self.capture_context, "capture_wifi_interface", None),
+            "monitor interface",
+        )
+        bluetooth = self._interface_name(
+            getattr(self.capture_context, "bluetooth_interface", None),
+            "hci0",
+        )
+
+        if self.current_view == "wifi":
+            return (
+                "WiFi Air Perimeter | "
+                f"Hardware: {base_wifi} -> {capture_wifi} | "
+                "Mode: 802.11 monitor + channel hopping | "
+                "Press h for details"
+            )
+
+        if self.current_view == "bluetooth":
+            return (
+                "Bluetooth Radar | "
+                f"Hardware: {bluetooth} | "
+                "Mode: Basic BLE Scan | "
+                "Press h for details"
+            )
+
+        if self.current_view == "stream":
+            return (
+                "Smart Packet Stream | "
+                f"Hardware: {capture_wifi} + {bluetooth} | "
+                "Mode: normalized multi-radio event stream | "
+                "Press h for details"
+            )
+
+        if self.current_view == "devices":
+            return (
+                "Device Intelligence | "
+                f"Hardware: {capture_wifi} + {bluetooth} | "
+                "Mode: multi-radio device correlation | "
+                "Press h for details"
+            )
+
+        return (
+            "Overview | "
+            f"Hardware: {capture_wifi} + {bluetooth} | "
+            "Mode: Air Perimeter live monitoring | "
+            "Press h for details"
+        )
+
+    def _context_for_current_view(self) -> CaptureContext:
+        if self.current_view == "bluetooth":
+            return self._context_for_view("Bluetooth Radar")
+
+        if self.current_view == "stream":
+            return self._context_for_view("Smart Packet Stream")
+
+        if self.current_view == "devices":
+            return self._context_for_view("Device Intelligence")
+
+        if self.current_view == "wifi":
+            return self.capture_context
+
+        return self.capture_context
 
     def _render_wifi_air_perimeter(self, wifi_rows, limit: int = 12) -> Panel:
         table = Table(expand=True)
@@ -400,20 +490,26 @@ class LiveDashboard:
     def _render_smart_packet_stream(self, limit: int = 12) -> Panel:
         table = Table(expand=True)
 
-        table.add_column("Time", no_wrap=True)
+        table.add_column("Time", no_wrap=True, width=8)
         table.add_column("Radio", no_wrap=True, width=5)
-        table.add_column("Proto", no_wrap=True)
-        table.add_column("Type", overflow="ellipsis")
-        table.add_column("Src MAC", no_wrap=True)
-        table.add_column("Src IP", no_wrap=True)
-        table.add_column("Dst MAC", no_wrap=True)
-        table.add_column("Dst IP", no_wrap=True)
-        table.add_column("Len", justify="right")
-        table.add_column("RSSI", justify="right")
-        table.add_column("CH/Band", justify="right")
-        table.add_column("Flags")
-        table.add_column("Device")
-        table.add_column("Summary")
+        table.add_column("Proto", no_wrap=True, width=7)
+        table.add_column("Type", overflow="ellipsis", no_wrap=True, width=18)
+        table.add_column("Device", overflow="ellipsis", no_wrap=True, width=28)
+        table.add_column("Src", overflow="ellipsis", no_wrap=True, width=20)
+        table.add_column("Dst", overflow="ellipsis", no_wrap=True, width=20)
+        table.add_column("Len", justify="right", width=5)
+        table.add_column("RSSI", justify="right", width=5)
+        table.add_column("CH/Band", justify="right", width=9)
+        table.add_column("Flags", overflow="ellipsis", no_wrap=True, width=18)
+
+        summary_full_mode = self.current_view == "stream"
+
+        table.add_column(
+            "Summary",
+            ratio=5,
+            overflow="fold" if summary_full_mode else "ellipsis",
+            no_wrap=not summary_full_mode,
+        )
 
         traces = self.packet_traces
 
@@ -425,6 +521,9 @@ class LiveDashboard:
         else:
             visible_traces = traces[-limit:]
 
+        devices = self.registry.all_devices()
+        device_title_index = self._device_title_index(devices)
+
         for trace in visible_traces:
             channel_band = "-"
 
@@ -435,25 +534,26 @@ class LiveDashboard:
             elif trace.band:
                 channel_band = trace.band
 
-            radio = trace.radio
+            device_name = self._trace_device_name(trace, device_title_index)
+            src = self._endpoint_label(trace.src_mac, trace.src_ip)
+            dst = self._endpoint_label(trace.dst_mac, trace.dst_ip)
 
             table.add_row(
                 trace.timestamp,
-                radio,
+                trace.radio,
                 trace.protocol,
-                trace.event_type[:18],
-                trace.src_mac or "-",
-                trace.src_ip or "-",
-                trace.dst_mac or "-",
-                trace.dst_ip or "-",
+                trace.event_type,
+                self._clip_text(device_name, 28),
+                self._clip_text(src, 20),
+                self._clip_text(dst, 20),
                 str(trace.length) if trace.length is not None else "-",
                 str(trace.rssi) if trace.rssi is not None else "-",
                 channel_band,
-                trace.flags[:24] if trace.flags else "-",
-                trace.device_key[:18],
-                trace.summary[:90],
+                trace.flags[:18] if trace.flags else "-",
+                trace.summary
+                if summary_full_mode
+                else self._clip_text(trace.summary, 90),
             )
-
         title = "Smart Packet Stream"
 
         if self.current_view == "stream":
@@ -549,7 +649,7 @@ class LiveDashboard:
         )
 
     def _render_device_intelligence(self, devices, limit: int = 4) -> Panel:
-        items = DeviceIntelligenceViewModel.build_items(devices)
+        items = self._current_device_items()
 
         if not items:
             return Panel(
@@ -561,6 +661,118 @@ class LiveDashboard:
             return self._render_device_intelligence_interactive(items)
 
         return self._render_device_intelligence_overview(items, limit=limit)
+
+    def _endpoint_label(self, mac: str | None, ip: str | None) -> str:
+        if mac and ip:
+            return f"{mac} / {ip}"
+
+        if mac:
+            return mac
+
+        if ip:
+            return ip
+
+        return "-"
+
+    def _trace_device_name(self, trace: SmartPacketTrace, devices) -> str:
+        candidates = {
+            value.lower()
+            for value in [
+                trace.src_mac,
+                trace.src_ip,
+                trace.device_key,
+            ]
+            if value
+        }
+
+        for device in devices:
+            identity = device.identity
+
+            identity_values = {
+                value.lower()
+                for value in [
+                    identity.primary_mac,
+                    getattr(identity, "bluetooth_address", None),
+                ]
+                if value
+            }
+
+            identity_values.update(value.lower() for value in identity.ip_addresses)
+            identity_values.update(value.lower() for value in identity.hostnames)
+
+            if candidates & identity_values:
+                item = DeviceIntelligenceViewModel.build_items([device])[0]
+                return item.title
+
+        return trace.device_key or "unknown"
+
+    def _endpoint_label(self, mac: str | None, ip: str | None) -> str:
+        if mac and ip:
+            return f"{mac}/{ip}"
+
+        if mac:
+            return mac
+
+        if ip:
+            return ip
+
+        return "-"
+
+    def _device_title_index(self, devices) -> dict[str, str]:
+        index = {}
+
+        items = DeviceIntelligenceViewModel.build_items(devices)
+        item_by_id = {item.device_id: item for item in items}
+
+        for device in devices:
+            item = item_by_id.get(device.device_id)
+
+            if not item:
+                continue
+
+            title = item.title
+            identity = device.identity
+
+            candidates = [
+                device.device_id,
+                identity.primary_mac,
+                getattr(identity, "bluetooth_address", None),
+                device.extra.get("bluetooth_address"),
+                device.extra.get("ble_address"),
+            ]
+
+            candidates.extend(identity.ip_addresses)
+            candidates.extend(identity.hostnames)
+
+            for value in candidates:
+                if value:
+                    index[str(value).lower()] = title
+
+        return index
+
+    def _trace_device_name(
+        self,
+        trace: SmartPacketTrace,
+        device_title_index: dict[str, str],
+    ) -> str:
+        candidates = [
+            trace.device_key,
+            trace.src_mac,
+            trace.src_ip,
+            trace.dst_mac,
+            trace.dst_ip,
+        ]
+
+        for value in candidates:
+            if not value:
+                continue
+
+            title = device_title_index.get(str(value).lower())
+
+            if title:
+                return title
+
+        return trace.device_key or "unknown"
 
     def _clip_text(self, value: str, max_length: int = 120) -> str:
         if len(value) <= max_length:
@@ -758,3 +970,17 @@ class LiveDashboard:
             )
 
         return table
+
+    def _interface_name(self, interface_value, fallback: str) -> str:
+        if not interface_value:
+            return fallback
+
+        if isinstance(interface_value, str):
+            return interface_value
+
+        name = getattr(interface_value, "name", None)
+
+        if name:
+            return name
+
+        return str(interface_value)
