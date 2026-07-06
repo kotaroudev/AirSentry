@@ -83,6 +83,25 @@ class SmartPacketStreamModel:
         if source == "WIFI_MONITOR" or capture_mode == "WIFI_MONITOR":
             return "WIFI"
 
+        if source == "LOCAL_NETWORK" or capture_mode == "LOCAL_VISIBILITY":
+            return "LOCAL"
+
+        if protocol in {
+            "ARP",
+            "DHCP",
+            "DNS",
+            "MDNS",
+            "SSDP",
+            "UPNP",
+            "LLMNR",
+            "NETBIOS",
+            "NDP",
+            "ICMPV6",
+            "DHCPV6",
+            "WS_DISCOVERY",
+        }:
+            return "LOCAL"
+
         return "-"
 
     @staticmethod
@@ -124,11 +143,18 @@ class SmartPacketStreamModel:
             return "802.11"
 
         protocol_map = {
+            "ARP": "ARP",
+            "DHCP": "DHCP",
+            "DHCPV6": "DHCPv6",
+            "DNS": "DNS",
             "MDNS": "mDNS",
             "SSDP": "SSDP",
             "UPNP": "UPnP",
-            "NETBIOS": "NetBIOS",
             "LLMNR": "LLMNR",
+            "NETBIOS": "NetBIOS",
+            "NDP": "IPv6 NDP",
+            "ICMPV6": "ICMPv6",
+            "WS_DISCOVERY": "WS-Discovery",
             "BLE": "BLE",
         }
 

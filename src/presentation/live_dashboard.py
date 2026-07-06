@@ -204,6 +204,35 @@ class LiveDashboard:
 
         return needle in haystack or normalized_needle in normalized_haystack
 
+    def _is_local_visibility_profile(self) -> bool:
+        profile_name = (self.capture_context.profile_name or "").lower()
+        return "local network visibility" in profile_name
+
+    def _active_hardware_label(self) -> str:
+        base_wifi = self._interface_name(
+            getattr(self.capture_context, "base_wifi_interface", None),
+            "local interface",
+        )
+        capture_wifi_context = getattr(
+            self.capture_context, "capture_wifi_interface", None
+        )
+        capture_wifi = self._interface_name(capture_wifi_context, "")
+
+        bluetooth_context = getattr(self.capture_context, "bluetooth_interface", None)
+        bluetooth = self._interface_name(bluetooth_context, "")
+
+        parts = []
+
+        if capture_wifi:
+            parts.append(capture_wifi)
+        elif base_wifi:
+            parts.append(base_wifi)
+
+        if bluetooth:
+            parts.append(bluetooth)
+
+        return " + ".join(parts) if parts else "unknown hardware"
+
     def _current_visible_device_items(self):
         items = self._current_device_items()
         start = self.device_page * self.devices_per_page
@@ -263,6 +292,75 @@ class LiveDashboard:
 
         elif self.current_view == "stream":
             self.stream_page = max(0, self.stream_page - 1)
+
+    def _render_local_network_visibility(self, devices, limit: int = 12) -> Panel:
+        table = Table(expand=True)
+
+        table.add_column("Device", overflow="ellipsis", no_wrap=True, ratio=3)
+        table.add_column("MAC", overflow="ellipsis", no_wrap=True, width=18)
+        table.add_column("IP", overflow="ellipsis", no_wrap=True, ratio=2)
+        table.add_column("Names", overflow="ellipsis", no_wrap=True, ratio=3)
+        table.add_column("Protocols", overflow="ellipsis", no_wrap=True, ratio=3)
+        table.add_column("Services", overflow="ellipsis", no_wrap=True, ratio=3)
+        table.add_column("Events", justify="right", width=7)
+        table.add_column("Last Behavior", overflow="ellipsis", no_wrap=True, ratio=3)
+
+        local_protocols = {
+            "ARP",
+            "DHCP",
+            "DNS",
+            "MDNS",
+            "SSDP",
+            "UPNP",
+            "LLMNR",
+            "NETBIOS",
+            "NDP",
+            "ICMPV6",
+            "DHCPV6",
+            "WS_DISCOVERY",
+        }
+
+        rows = []
+
+        for device in devices:
+            protocols = device.identity.protocols_seen
+
+            if not protocols & local_protocols:
+                continue
+
+            item = DeviceIntelligenceViewModel.build_items([device])[0]
+
+            rows.append(
+                (
+                    item.event_count,
+                    item,
+                )
+            )
+
+        rows.sort(key=lambda entry: entry[0], reverse=True)
+
+        for _, item in rows[:limit]:
+            table.add_row(
+                item.title,
+                item.mac or "-",
+                ", ".join(item.ip_addresses) if item.ip_addresses else "-",
+                ", ".join(item.hostnames) if item.hostnames else "-",
+                ", ".join(item.protocols) if item.protocols else "-",
+                ", ".join(item.services[:3]) if item.services else "-",
+                str(item.event_count),
+                self._last_behavior_label(item),
+            )
+
+        if not rows:
+            return Panel(
+                "No local network visibility events observed yet.\n\n"
+                "This profile listens for ARP, DHCP, DNS, mDNS, SSDP/UPnP, "
+                "LLMNR and NetBIOS visible to this host. Managed mode sees host, "
+                "broadcast and multicast traffic. Promiscuous mode is best effort.",
+                title="Local Network Visibility",
+            )
+
+        return Panel(table, title="Local Network Visibility")
 
     def _context_for_view(self, view_name: str) -> CaptureContext:
         if view_name == "Bluetooth Radar":
@@ -328,22 +426,16 @@ class LiveDashboard:
                 bluetooth_interface=self.capture_context.bluetooth_interface,
                 capture_metadata=[
                     "normalized events",
-                    "RSSI samples",
-                    "MAC addresses",
-                    "OUI/vendor evidence",
-                    "SSID probes",
-                    "frame/message types",
                     "behavior timeline",
+                    "related devices",
+                    *self.capture_context.capture_metadata,
                 ],
                 network_layers=[
                     "Depends on active collectors",
-                    "Current Air Perimeter evidence: OSI L2 / IEEE 802.11 wireless link",
-                    "Future Local Visibility: OSI L2/L3/L4/L7 local network protocols",
+                    *self.capture_context.network_layers,
                 ],
                 observed_protocols=[
-                    "IEEE 802.11 from Air Perimeter",
-                    "BLE/HCI when Bluetooth Radar is active",
-                    "ARP, DHCP, mDNS, SSDP, DNS, LLMNR, NetBIOS when Local Visibility is active",
+                    *self.capture_context.observed_protocols,
                 ],
                 frame_families=[
                     "Behaviors",
@@ -356,7 +448,7 @@ class LiveDashboard:
                     "Unknown means activity was observed but identity evidence is incomplete.",
                     "Vendor/OUI is soft evidence and may be wrong with randomized MACs.",
                     "Use Smart Packet Stream to validate raw technical traces.",
-                    "Local Network Visibility, BLE collection and persistence improve confidence.",
+                    *self.capture_context.limitations,
                 ],
                 active_storage="memory-only",
                 channel_strategy="uses evidence from active collectors",
@@ -377,6 +469,13 @@ class LiveDashboard:
 
         if self.current_view == "wifi":
             devices = self.registry.all_devices()
+
+            if self._is_local_visibility_profile():
+                return Group(
+                    self._render_navigation_help(),
+                    self._render_local_network_visibility(devices, limit=24),
+                )
+
             wifi_rows = WiFiViewModel.build_rows(devices)
 
             return Group(
@@ -408,12 +507,19 @@ class LiveDashboard:
             )
 
         devices = self.registry.all_devices()
-        wifi_rows = WiFiViewModel.build_rows(devices)
         bluetooth_rows = BluetoothViewModel.build_rows(devices)
+
+        primary_panel = (
+            self._render_local_network_visibility(devices, limit=5)
+            if self._is_local_visibility_profile()
+            else self._render_wifi_air_perimeter(
+                WiFiViewModel.build_rows(devices), limit=5
+            )
+        )
 
         return Group(
             self._render_navigation_help(),
-            self._render_wifi_air_perimeter(wifi_rows, limit=5),
+            primary_panel,
             self._render_bluetooth_radar(bluetooth_rows, limit=5),
             self._render_smart_packet_stream(limit=5),
             self._render_device_intelligence(devices, limit=5),
@@ -422,7 +528,8 @@ class LiveDashboard:
     def _render_navigation_help(self) -> Panel:
         return Panel(
             "[bold]Navigation[/bold]: "
-            "[0] Overview  [1] WiFi  [2] Bluetooth  [3] Packet Stream  "
+            f"[0] Overview  [1] {'Local' if self._is_local_visibility_profile() else 'WiFi'}  "
+            "[2] Bluetooth  [3] Packet Stream  "
             "[4] Devices  [n] Next  [p] Previous  "
             "[j/k] Select  [e] Expand [/] Search  [r] Reset  "
             "[bold]h[/bold] Help  [q] Quit\n"
@@ -444,18 +551,29 @@ class LiveDashboard:
     def _compact_context_line(self) -> str:
         base_wifi = self._interface_name(
             getattr(self.capture_context, "base_wifi_interface", None),
-            "wlan0",
+            "local interface",
         )
-        capture_wifi = self._interface_name(
-            getattr(self.capture_context, "capture_wifi_interface", None),
-            "monitor interface",
+        capture_wifi_context = getattr(
+            self.capture_context, "capture_wifi_interface", None
         )
+        capture_wifi = self._interface_name(capture_wifi_context, "")
         bluetooth = self._interface_name(
             getattr(self.capture_context, "bluetooth_interface", None),
-            "hci0",
+            "",
         )
 
+        active_hardware = self._active_hardware_label()
+
         if self.current_view == "wifi":
+            if self._is_local_visibility_profile():
+                return (
+                    "Local Network Visibility | "
+                    f"Hardware: {base_wifi} | "
+                    "Mode: managed/promiscuous local capture | "
+                    "Visible: ARP, DHCP, DNS, mDNS, SSDP/UPnP, LLMNR, NetBIOS | "
+                    "Press h for details"
+                )
+
             return (
                 "WiFi Air Perimeter | "
                 f"Hardware: {base_wifi} -> {capture_wifi} | "
@@ -474,8 +592,8 @@ class LiveDashboard:
         if self.current_view == "stream":
             return (
                 "Smart Packet Stream | "
-                f"Hardware: {capture_wifi} + {bluetooth} | "
-                "Mode: normalized multi-radio event stream | "
+                f"Hardware: {active_hardware} | "
+                "Mode: normalized multi-source event stream | "
                 "Press h for details"
             )
 
@@ -490,15 +608,23 @@ class LiveDashboard:
 
             return (
                 "Device Intelligence | "
-                f"Hardware: {capture_wifi} + {bluetooth} | "
-                "Mode: multi-radio device correlation | "
+                f"Hardware: {active_hardware} | "
+                "Mode: multi-source device correlation | "
                 "Press / to search | Press h for details"
                 f"{search_text}{mode_text}"
             )
 
+        if self._is_local_visibility_profile():
+            return (
+                "Overview | "
+                f"Hardware: {active_hardware} | "
+                "Mode: Local Network Visibility / managed-promiscuous | "
+                "Press h for details"
+            )
+
         return (
             "Overview | "
-            f"Hardware: {capture_wifi} + {bluetooth} | "
+            f"Hardware: {active_hardware} | "
             "Mode: Air Perimeter live monitoring | "
             "Press h for details"
         )

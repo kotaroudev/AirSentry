@@ -24,6 +24,51 @@ class DeviceRegistry:
 
     devices: dict[str, DeviceProfile] = field(default_factory=dict)
 
+    def _add_radio_event_count(
+        self,
+        profile: DeviceProfile,
+        event: RawWirelessEvent,
+    ) -> None:
+        radio = self._radio_from_event(event)
+
+        if not radio:
+            return
+
+        counts = profile.extra.setdefault("radio_event_counts", {})
+        counts[radio] = int(counts.get(radio) or 0) + 1
+
+    def _radio_from_event(self, event: RawWirelessEvent) -> str | None:
+        protocol = (event.protocol or "").upper()
+        source = (event.source or "").upper()
+        capture_mode = (event.capture_mode or "").upper()
+
+        if protocol == "WIFI" or source == "WIFI_MONITOR":
+            return "WIFI"
+
+        if protocol in {"BLE", "BT", "BT_HCI", "BLUETOOTH"}:
+            return "BT"
+
+        if source == "LOCAL_NETWORK" or capture_mode == "LOCAL_VISIBILITY":
+            return "LOCAL"
+
+        if protocol in {
+            "ARP",
+            "DHCP",
+            "DNS",
+            "MDNS",
+            "SSDP",
+            "UPNP",
+            "LLMNR",
+            "NETBIOS",
+            "NDP",
+            "ICMPV6",
+            "DHCPV6",
+            "WS_DISCOVERY",
+        }:
+            return "LOCAL"
+
+        return None
+
     def ingest(self, event: RawWirelessEvent) -> None:
         """
         Ingests one raw event and updates the related device profile.
@@ -38,6 +83,8 @@ class DeviceRegistry:
         profile.update_seen_time(event.timestamp)
         profile.packet_count += 1
         profile.event_count += 1
+
+        self._add_radio_event_count(profile, event)
 
         profile.add_protocol(event.protocol)
         profile.add_event_type(event.event_type)
@@ -191,9 +238,6 @@ class DeviceRegistry:
 
         if event.src_ip:
             profile.identity.ip_addresses.add(event.src_ip)
-
-        if event.dst_ip:
-            profile.identity.ip_addresses.add(event.dst_ip)
 
         if event.hostname:
             profile.identity.hostnames.add(event.hostname)
@@ -356,6 +400,18 @@ class DeviceRegistry:
 
         if event.protocol == "BLE":
             return "Bluetooth Low Energy activity was observed for this device."
+
+        if event.protocol == "DHCP" and event.hostname:
+            return f"Device announced hostname '{event.hostname}' through DHCP."
+
+        if event.protocol == "DNS" and event.service_name:
+            return f"Device used DNS involving '{event.service_name}'."
+
+        if event.protocol == "LLMNR" and event.hostname:
+            return f"Device used LLMNR involving '{event.hostname}'."
+
+        if event.protocol == "NETBIOS":
+            return "Device used NetBIOS local discovery traffic."
 
         return None
 
@@ -592,6 +648,61 @@ class DeviceRegistry:
                     + (f" for hostname '{event.hostname}'." if event.hostname else ".")
                 ),
                 confidence=0.85,
+                raw_fields=raw_fields,
+            )
+
+        if event.protocol == "ARP":
+            return DeviceBehavior(
+                category="EVIDENCE",
+                severity="info",
+                protocol=event.protocol,
+                event_type=event.event_type,
+                raw_event_id=event.event_id,
+                title="ARP activity observed",
+                description=(
+                    "Device participated in ARP traffic"
+                    + (f" involving IP {event.src_ip}." if event.src_ip else ".")
+                ),
+                confidence=0.85,
+                raw_fields=raw_fields,
+            )
+
+        if event.protocol == "DHCP":
+            hostname = event.hostname or event.extra.get("hostname")
+            requested_addr = event.extra.get("requested_addr")
+
+            return DeviceBehavior(
+                category="EVIDENCE",
+                severity="info",
+                protocol=event.protocol,
+                event_type=event.event_type,
+                raw_event_id=event.event_id,
+                title="DHCP activity observed",
+                description=(
+                    "Device used DHCP"
+                    + (f" with hostname '{hostname}'" if hostname else "")
+                    + (f" requesting IP {requested_addr}" if requested_addr else "")
+                    + "."
+                ),
+                confidence=0.90,
+                raw_fields=raw_fields,
+            )
+
+        if event.protocol in {"DNS", "MDNS", "LLMNR", "NETBIOS"}:
+            name = event.hostname or event.service_name
+
+            return DeviceBehavior(
+                category="EVIDENCE",
+                severity="info",
+                protocol=event.protocol,
+                event_type=event.event_type,
+                raw_event_id=event.event_id,
+                title=f"{event.protocol} activity observed",
+                description=(
+                    f"Device used {event.protocol}"
+                    + (f" involving name '{name}'." if name else ".")
+                ),
+                confidence=0.80,
                 raw_fields=raw_fields,
             )
 

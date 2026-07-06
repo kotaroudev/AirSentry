@@ -28,6 +28,7 @@ class DeviceIntelligenceItem:
 
     packet_count: int = 0
     event_count: int = 0
+    local_event_count: int = 0
     wifi_event_count: int = 0
     bluetooth_event_count: int = 0
     events_summary: str = "0"
@@ -162,6 +163,9 @@ class DeviceIntelligenceViewModel:
         bluetooth_event_count = DeviceIntelligenceViewModel._radio_event_count(
             device, "BT"
         )
+        local_event_count = DeviceIntelligenceViewModel._radio_event_count(
+            device, "LOCAL"
+        )
         signal_summary = DeviceIntelligenceViewModel._display_signal_summary(
             avg_wifi_rssi,
             avg_bluetooth_rssi,
@@ -170,6 +174,7 @@ class DeviceIntelligenceViewModel:
             device.event_count,
             wifi_event_count,
             bluetooth_event_count,
+            local_event_count,
         )
         security_evidence = DeviceIntelligenceViewModel._display_security_evidence(
             device
@@ -234,6 +239,7 @@ class DeviceIntelligenceViewModel:
             related_devices=sorted(device.related_devices),
             packet_count=device.packet_count,
             event_count=device.event_count,
+            local_event_count=local_event_count,
             wifi_event_count=wifi_event_count,
             bluetooth_event_count=bluetooth_event_count,
             events_summary=events_summary,
@@ -359,6 +365,24 @@ class DeviceIntelligenceViewModel:
         if "BLE" in protocols or "BT_HCI" in protocols or counts.get("BT"):
             radios.add("BT")
 
+        local_protocols = {
+            "ARP",
+            "DHCP",
+            "DNS",
+            "MDNS",
+            "SSDP",
+            "UPNP",
+            "LLMNR",
+            "NETBIOS",
+            "NDP",
+            "ICMPV6",
+            "DHCPV6",
+            "WS_DISCOVERY",
+        }
+
+        if protocols & local_protocols or counts.get("LOCAL"):
+            radios.add("LOCAL")
+
         return sorted(radios)
 
     @staticmethod
@@ -407,6 +431,7 @@ class DeviceIntelligenceViewModel:
         total_events: int,
         wifi_events: int,
         bluetooth_events: int,
+        local_events: int,
     ) -> str:
         parts = [f"Total {total_events}"]
 
@@ -415,6 +440,9 @@ class DeviceIntelligenceViewModel:
 
         if bluetooth_events:
             parts.append(f"BT {bluetooth_events}")
+
+        if local_events:
+            parts.append(f"Local {local_events}")
 
         return " | ".join(parts)
 
@@ -613,6 +641,18 @@ class DeviceIntelligenceViewModel:
             "LLMNR": "LLMNR",
             "BLE": "BLE",
             "BT_HCI": "Bluetooth HCI",
+            "ARP": "ARP",
+            "DHCP": "DHCP",
+            "DNS": "DNS",
+            "IP": "IP",
+            "IPv4": "IPv4",
+            "IPv6": "IPv6",
+            "TCP": "TCP",
+            "UDP": "UDP",
+            "NDP": "IPv6 NDP",
+            "ICMPV6": "ICMPv6",
+            "DHCPV6": "DHCPv6",
+            "WS_DISCOVERY": "WS-Discovery",
         }
 
         return [protocol_map.get(protocol, protocol) for protocol in sorted(protocols)]
@@ -727,6 +767,36 @@ class DeviceIntelligenceViewModel:
         if "BLE" in device.identity.protocols_seen:
             families.add("BLE advertisements")
 
+        if "ARP" in device.identity.protocols_seen:
+            families.add("ARP messages")
+
+        if "DHCP" in device.identity.protocols_seen:
+            families.add("DHCP messages")
+
+        if "DNS" in device.identity.protocols_seen:
+            families.add("DNS messages")
+
+        if "MDNS" in device.identity.protocols_seen:
+            families.add("mDNS messages")
+
+        if "SSDP" in device.identity.protocols_seen:
+            families.add("SSDP discovery messages")
+
+        if "LLMNR" in device.identity.protocols_seen:
+            families.add("LLMNR messages")
+
+        if "NETBIOS" in device.identity.protocols_seen:
+            families.add("NetBIOS messages")
+
+        if "NDP" in device.identity.protocols_seen:
+            families.add("IPv6 Neighbor Discovery messages")
+
+        if "DHCPV6" in device.identity.protocols_seen:
+            families.add("DHCPv6 messages")
+
+        if "WS_DISCOVERY" in device.identity.protocols_seen:
+            families.add("WS-Discovery messages")
+
         return sorted(families)
 
     @staticmethod
@@ -735,6 +805,30 @@ class DeviceIntelligenceViewModel:
             "ble_advertisement": "BLE Advertisement",
             "ble_scan_response": "BLE Scan Response",
             "ble_device_seen": "BLE Device Seen",
+            "arp_request": "ARP Request",
+            "arp_reply": "ARP Reply",
+            "dhcp_discover": "DHCP Discover",
+            "dhcp_offer": "DHCP Offer",
+            "dhcp_request": "DHCP Request",
+            "dhcp_ack": "DHCP Ack",
+            "mdns_query": "mDNS Query",
+            "mdns_response": "mDNS Response",
+            "dns_query": "DNS Query",
+            "dns_response": "DNS Response",
+            "llmnr_query": "LLMNR Query",
+            "llmnr_response": "LLMNR Response",
+            "ssdp_m_search": "SSDP M-SEARCH",
+            "ssdp_notify": "SSDP NOTIFY",
+            "netbios_activity": "NetBIOS Activity",
+            "ndp_router_advertisement": "IPv6 Router Advertisement",
+            "ndp_router_solicitation": "IPv6 Router Solicitation",
+            "ndp_neighbor_solicitation": "IPv6 Neighbor Solicitation",
+            "ndp_neighbor_advertisement": "IPv6 Neighbor Advertisement",
+            "dhcpv6_activity": "DHCPv6 Activity",
+            "ws_discovery_probe": "WS-Discovery Probe",
+            "ws_discovery_hello": "WS-Discovery Hello",
+            "ws_discovery_resolve": "WS-Discovery Resolve",
+            "ws_discovery": "WS-Discovery",
         }
 
         if event_type in event_map:
