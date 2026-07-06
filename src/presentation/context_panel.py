@@ -123,15 +123,15 @@ class ContextPanel:
         else:
             lines.append("- none documented")
 
-        lines.extend(
-            [
-                "",
-                "[bold]Memory Policy[/bold]",
-                context.memory_policy,
-                "",
-                "[bold]Persistence[/bold]",
-                context.persistence_hint,
-            ]
-        )
+        # lines.extend(
+        #     [
+        #         "",
+        #         "[bold]Memory Policy[/bold]",
+        #         context.memory_policy,
+        #         "",
+        #         "[bold]Persistence[/bold]",
+        #         context.persistence_hint,
+        #     ]
+        # )
 
         return "\n".join(lines)

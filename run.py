@@ -9,6 +9,7 @@ from src.core.capture_context import CaptureContext, CaptureInterfaceContext
 from src.core.device_registry import DeviceRegistry
 from src.core.event_bus import EventBus
 from src.core.mode_descriptions import MODE_DESCRIPTIONS
+from src.infrastructure.bluetooth_basic_scanner import BluetoothBasicScanner
 from src.infrastructure.hardware_reader import HardwareReader
 from src.infrastructure.wifi_channel_hopper import WiFiChannelHopper
 from src.infrastructure.wifi_mode_controller import WiFiModeController
@@ -433,6 +434,12 @@ def run_live_wifi_dashboard(interface: str) -> bool:
     registry = DeviceRegistry()
     packet_traces = []
     stop_event = Event()
+    bluetooth_scanner = BluetoothBasicScanner(
+        event_bus=event_bus,
+        interface="hci0",
+        scan_window_seconds=8,
+        scan_pause_seconds=1.0,
+    )
 
     channel_hopper = WiFiChannelHopper(
         controller=controller,
@@ -556,6 +563,9 @@ def run_live_wifi_dashboard(interface: str) -> bool:
         )
         capture.start()
 
+        print("[*] Starting Bluetooth Basic BLE scanner on hci0...")
+        bluetooth_scanner.start()
+
         print("[*] Starting AirSentry event processor...")
         processor_thread.start()
 
@@ -589,6 +599,7 @@ def run_live_wifi_dashboard(interface: str) -> bool:
         )
 
         channel_hopper.stop()
+        bluetooth_scanner.stop()
         capture.stop()
 
         if controller.delete_monitor_interface():

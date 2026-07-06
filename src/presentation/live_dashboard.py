@@ -8,6 +8,7 @@ from rich.table import Table
 
 from src.core.capture_context import CaptureContext
 from src.core.device_registry import DeviceRegistry
+from src.presentation.bluetooth_view_model import BluetoothViewModel
 from src.presentation.context_panel import ContextPanel
 from src.presentation.device_intelligence_view_model import DeviceIntelligenceViewModel
 from src.presentation.keyboard_reader import KeyboardReader
@@ -156,6 +157,107 @@ class LiveDashboard:
         elif self.current_view == "stream":
             self.stream_page = max(0, self.stream_page - 1)
 
+    def _context_for_view(self, view_name: str) -> CaptureContext:
+        if view_name == "Bluetooth Radar":
+            return CaptureContext(
+                profile_name="Bluetooth Radar / Basic BLE Scan",
+                profile_description=(
+                    "Discovers nearby BLE devices from advertised Bluetooth Low Energy "
+                    "metadata using the local adapter when available."
+                ),
+                bluetooth_interface=self.capture_context.bluetooth_interface,
+                capture_metadata=[
+                    "Bluetooth interface",
+                    "BLE address",
+                    "advertised name when available",
+                    "RSSI when available",
+                    "service UUIDs when advertised",
+                    "manufacturer data when advertised",
+                    "advertising timestamp",
+                ],
+                network_layers=[
+                    "Bluetooth radio observation layer",
+                    "BLE advertising layer",
+                ],
+                observed_protocols=[
+                    "BLE advertisements",
+                    "BLE scan responses when available",
+                ],
+                frame_families=[
+                    "BLE advertisements",
+                    "BLE scan responses",
+                ],
+                limitations=[
+                    "Basic BLE scanning does not capture all Bluetooth traffic.",
+                    "Connected BLE payloads may be encrypted or unavailable.",
+                    "Many BLE devices use random/private addresses.",
+                    "RSSI, advertised name and manufacturer data may appear intermittently.",
+                    "External BLE hardware can significantly improve passive Bluetooth spectrum visibility.",
+                ],
+                active_storage="memory-only",
+                channel_strategy="controller-managed BLE scanning",
+                payload_visibility=(
+                    "advertising metadata only; connection payloads may be encrypted or unavailable"
+                ),
+            )
+
+        if view_name == "Smart Packet Stream":
+            context = self.capture_context
+            context.profile_description = (
+                "Shows the most complete technical trace view for every normalized event "
+                "seen by the active collectors."
+            )
+            return context
+
+        if view_name == "Device Intelligence":
+            return CaptureContext(
+                profile_name="Device Intelligence / Correlation View",
+                profile_description=(
+                    "Correlates observed signals into device profiles, behaviors, "
+                    "evidence, identity notes and confidence hints."
+                ),
+                base_wifi_interface=self.capture_context.base_wifi_interface,
+                capture_wifi_interface=self.capture_context.capture_wifi_interface,
+                bluetooth_interface=self.capture_context.bluetooth_interface,
+                capture_metadata=[
+                    "normalized events",
+                    "RSSI samples",
+                    "MAC addresses",
+                    "OUI/vendor evidence",
+                    "SSID probes",
+                    "frame/message types",
+                    "behavior timeline",
+                ],
+                network_layers=[
+                    "Depends on active collectors",
+                    "Current Air Perimeter evidence: OSI L2 / IEEE 802.11 wireless link",
+                    "Future Local Visibility: OSI L2/L3/L4/L7 local network protocols",
+                ],
+                observed_protocols=[
+                    "IEEE 802.11 from Air Perimeter",
+                    "BLE/HCI when Bluetooth Radar is active",
+                    "ARP, DHCP, mDNS, SSDP, DNS, LLMNR, NetBIOS when Local Visibility is active",
+                ],
+                frame_families=[
+                    "Behaviors",
+                    "Evidence",
+                    "Identity notes",
+                    "Risk notes",
+                    "Related devices",
+                ],
+                limitations=[
+                    "Unknown means activity was observed but identity evidence is incomplete.",
+                    "Vendor/OUI is soft evidence and may be wrong with randomized MACs.",
+                    "Use Smart Packet Stream to validate raw technical traces.",
+                    "Local Network Visibility, BLE collection and persistence improve confidence.",
+                ],
+                active_storage="memory-only",
+                channel_strategy="uses evidence from active collectors",
+                payload_visibility="shows interpreted evidence, not raw payload decoding",
+            )
+
+        return self.capture_context
+
     def _render(self):
         devices = self.registry.all_devices()
         wifi_rows = WiFiViewModel.build_rows(devices)
@@ -168,22 +270,31 @@ class LiveDashboard:
             )
 
         if self.current_view == "bluetooth":
+            bluetooth_rows = BluetoothViewModel.build_rows(devices)
+
             return Group(
-                ContextPanel.render(self.capture_context, "Bluetooth Radar"),
+                ContextPanel.render(
+                    self._context_for_view("Bluetooth Radar"),
+                    "Bluetooth Radar",
+                ),
                 self._render_navigation_help(),
-                self._render_bluetooth_radar_placeholder(),
+                self._render_bluetooth_radar(bluetooth_rows, limit=24),
             )
 
         if self.current_view == "stream":
             return Group(
-                ContextPanel.render(self.capture_context, "Smart Packet Stream"),
+                ContextPanel.render(
+                    self._context_for_view("Smart Packet Stream"), "Smart Packet Stream"
+                ),
                 self._render_navigation_help(),
                 self._render_smart_packet_stream(limit=24),
             )
 
         if self.current_view == "devices":
             return Group(
-                ContextPanel.render(self.capture_context, "Device Intelligence"),
+                ContextPanel.render(
+                    self._context_for_view("Device Intelligence"), "Device Intelligence"
+                ),
                 self._render_navigation_help(),
                 self._render_device_intelligence(devices, limit=18),
             )
@@ -248,22 +359,41 @@ class LiveDashboard:
 
         return Panel(table, title="WiFi Air Perimeter")
 
-    def _render_bluetooth_radar_placeholder(self) -> Panel:
+    def _render_bluetooth_radar(self, bluetooth_rows, limit: int = 12) -> Panel:
         table = Table(expand=True)
 
-        table.add_column("Status")
-        table.add_column("Interface")
-        table.add_column("Mode")
-        table.add_column("Visibility")
-        table.add_column("Notes")
+        table.add_column("Role", no_wrap=True, width=4)
+        table.add_column("Name", ratio=2, overflow="ellipsis")
+        table.add_column("Address", no_wrap=True, width=17)
+        table.add_column("RSSI", justify="right", width=6)
+        table.add_column("Proximity", width=10, overflow="ellipsis")
+        table.add_column("Vendor", ratio=2, overflow="ellipsis")
+        table.add_column("Addr Type", width=9, overflow="ellipsis")
+        table.add_column("Services", ratio=2, overflow="ellipsis")
+        table.add_column("Events", justify="right", width=6, no_wrap=True)
+        table.add_column("Last Seen", no_wrap=True, width=8)
 
-        table.add_row(
-            "Pending",
-            "hci0",
-            "Basic BLE / HCI",
-            "BLE advertisements and local HCI metadata when implemented",
-            "Bluetooth collector is planned after WiFi live navigation.",
-        )
+        for row in bluetooth_rows[:limit]:
+            table.add_row(
+                row.role,
+                row.name,
+                row.address,
+                f"{row.rssi:.1f}" if row.rssi is not None else "-",
+                row.proximity,
+                row.vendor,
+                row.address_type,
+                self._clip_text(row.services, 28),
+                str(row.events),
+                row.last_seen,
+            )
+
+        if not bluetooth_rows:
+            return Panel(
+                "No BLE devices observed yet.\n\n"
+                "Basic BLE scanning depends on nearby devices advertising. "
+                "Many devices rotate private addresses or advertise intermittently.",
+                title="Bluetooth Radar",
+            )
 
         return Panel(table, title="Bluetooth Radar")
 
@@ -271,8 +401,9 @@ class LiveDashboard:
         table = Table(expand=True)
 
         table.add_column("Time", no_wrap=True)
+        table.add_column("Radio", no_wrap=True, width=5)
         table.add_column("Proto", no_wrap=True)
-        table.add_column("Type")
+        table.add_column("Type", overflow="ellipsis")
         table.add_column("Src MAC", no_wrap=True)
         table.add_column("Src IP", no_wrap=True)
         table.add_column("Dst MAC", no_wrap=True)
@@ -304,8 +435,11 @@ class LiveDashboard:
             elif trace.band:
                 channel_band = trace.band
 
+            radio = trace.radio
+
             table.add_row(
                 trace.timestamp,
+                radio,
                 trace.protocol,
                 trace.event_type[:18],
                 trace.src_mac or "-",

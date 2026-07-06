@@ -152,6 +152,37 @@ class DeviceRegistry:
                 "event_type": event.event_type or wifi_last.get("event_type"),
             }
 
+        if event.protocol == "BLE":
+            bluetooth_address = event.extra.get("bluetooth_address") or event.src_mac
+
+            if bluetooth_address:
+                profile.identity.bluetooth_address = bluetooth_address
+                profile.identity.protocols_seen.add("BLE")
+                profile.extra["bluetooth_address"] = bluetooth_address
+
+            bluetooth_name = event.extra.get("bluetooth_name")
+
+            if bluetooth_name:
+                profile.identity.hostnames.add(bluetooth_name)
+                profile.extra["bluetooth_name"] = bluetooth_name
+
+            address_type = event.extra.get("address_type")
+
+            if address_type:
+                profile.extra["address_type"] = address_type
+
+            manufacturer_data = event.extra.get("manufacturer_data")
+
+            if manufacturer_data:
+                profile.extra["manufacturer_data"] = manufacturer_data
+
+            service_uuids = event.extra.get("service_uuids")
+
+            if service_uuids:
+                profile.extra["service_uuids"] = service_uuids
+                for service_uuid in service_uuids:
+                    profile.identity.services.add(service_uuid)
+
         if event.event_type in {"beacon", "probe_response"}:
             wifi_air_profile = profile.extra.get("wifi_air_profile", {})
 
@@ -435,6 +466,22 @@ class DeviceRegistry:
                 ),
                 confidence=0.80,
                 raw_fields=raw_fields,
+            )
+
+        if event.protocol == "BLE":
+            bluetooth_name = event.extra.get("bluetooth_name")
+            address_type = event.extra.get("address_type") or "unknown"
+
+            name_part = f' name "{bluetooth_name}"' if bluetooth_name else ""
+
+            return DeviceBehavior(
+                category="EVIDENCE",
+                title="BLE advertisement observed",
+                description=(
+                    f"Nearby BLE advertisement observed{name_part}. "
+                    f"Address type: {address_type}."
+                ),
+                raw_event_id=event.event_id,
             )
 
         if event.protocol == "SSDP" or event.protocol == "UPNP":

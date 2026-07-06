@@ -1,0 +1,13 @@
+{
+  "0000110a-0000-1000-8000-00805f9b34fb": "A2DP Audio Source",
+  "0000110b-0000-1000-8000-00805f9b34fb": "A2DP Audio Sink",
+  "0000110c-0000-1000-8000-00805f9b34fb": "AVRCP Target",
+  "0000110e-0000-1000-8000-00805f9b34fb": "AVRCP Controller",
+  "00001112-0000-1000-8000-00805f9b34fb": "Headset Audio Gateway",
+  "0000111e-0000-1000-8000-00805f9b34fb": "Handsfree",
+  "00001800-0000-1000-8000-00805f9b34fb": "Generic Access",
+  "00001801-0000-1000-8000-00805f9b34fb": "Generic Attribute",
+  "0000180a-0000-1000-8000-00805f9b34fb": "Device Information",
+  "0000180f-0000-1000-8000-00805f9b34fb": "Battery Service",
+  "00001812-0000-1000-8000-00805f9b34fb": "Human Interface Device"
+}

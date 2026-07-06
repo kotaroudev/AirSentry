@@ -6,7 +6,7 @@ from src.core.models import RawWirelessEvent
 @dataclass
 class SmartPacketTrace:
     timestamp: str
-    source: str
+    radio: str
     protocol: str
     event_type: str
     src_mac: str | None
@@ -20,6 +20,7 @@ class SmartPacketTrace:
     flags: str
     device_key: str
     summary: str
+    source: str
 
 
 class SmartPacketStreamModel:
@@ -39,6 +40,7 @@ class SmartPacketStreamModel:
 
         return SmartPacketTrace(
             timestamp=event.timestamp.strftime("%H:%M:%S"),
+            radio=SmartPacketStreamModel._radio_from_event(event),
             source=event.source,
             protocol=SmartPacketStreamModel._display_protocol(event),
             event_type=SmartPacketStreamModel._display_event_type(event),
@@ -62,6 +64,26 @@ class SmartPacketStreamModel:
 
         active = [name for name, enabled in flags.items() if enabled]
         return ",".join(active)
+
+    @staticmethod
+    def _radio_from_event(event: RawWirelessEvent) -> str:
+        protocol = (event.protocol or "").upper()
+        source = (event.source or "").upper()
+        capture_mode = (event.capture_mode or "").upper()
+
+        if protocol in {"BLE", "BT", "BT_HCI", "BLUETOOTH"}:
+            return "BT"
+
+        if source.startswith("BLE") or capture_mode.startswith("BT_"):
+            return "BT"
+
+        if protocol in {"WIFI", "802.11", "IEEE 802.11"}:
+            return "WIFI"
+
+        if source == "WIFI_MONITOR" or capture_mode == "WIFI_MONITOR":
+            return "WIFI"
+
+        return "-"
 
     @staticmethod
     def _device_key(event: RawWirelessEvent) -> str:
