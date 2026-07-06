@@ -19,6 +19,12 @@ class CaptureContext:
     base_wifi_interface: CaptureInterfaceContext | None = None
     capture_wifi_interface: CaptureInterfaceContext | None = None
     bluetooth_interface: CaptureInterfaceContext | None = None
+
+    capture_metadata: list[str] = field(default_factory=list)
+    network_layers: list[str] = field(default_factory=list)
+    observed_protocols: list[str] = field(default_factory=list)
+    frame_families: list[str] = field(default_factory=list)
+
     visible_layers: list[str] = field(default_factory=list)
     visible_protocols: list[str] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)

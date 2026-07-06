@@ -461,18 +461,26 @@ def run_live_wifi_dashboard(interface: str) -> bool:
             signal_power="per-device RSSI",
             approximate_range="RSSI-based estimate only; exact meters are unreliable",
         ),
-        visible_layers=[
-            "RadioTap metadata",
-            "802.11 management frames",
-            "802.11 control frames",
-            "802.11 data-frame metadata",
+        capture_metadata=[
+            "RadioTap",
+            "RSSI",
+            "observed channel",
+            "frequency",
+            "capture interface",
+            "timestamp",
         ],
-        visible_protocols=[
+        network_layers=[
+            "OSI L2 / IEEE 802.11 wireless link",
+        ],
+        observed_protocols=[
             "IEEE 802.11",
+        ],
+        frame_families=[
+            "Management frames",
+            "Control frames",
+            "Data frames",
             "Beacon frames",
             "Probe requests",
-            "Control frames",
-            "Data-frame metadata",
             "WPA/WPA2/WPA3/WPS metadata",
         ],
         limitations=[

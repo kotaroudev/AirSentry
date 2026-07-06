@@ -282,9 +282,70 @@ class DeviceRegistry:
         behavior = self._build_behavior(event)
 
         if not behavior:
+            behavior = self._build_fallback_behavior(event)
+
+        if not behavior:
             return
 
         profile.add_behavior(behavior)
+
+    def _build_fallback_behavior(
+        self, event: RawWirelessEvent
+    ) -> DeviceBehavior | None:
+        """
+        Builds conservative fallback behaviors when AirSentry observed activity
+        but no more specific interpretation was created.
+
+        This prevents UNKNOWN/STA devices from appearing empty in Device Intelligence.
+        """
+        if event.protocol != "WIFI":
+            return None
+
+        dot11 = event.parsed_fields.get("dot11", {})
+        flags = dot11.get("flags", {})
+
+        if "control" in event.event_type:
+            return DeviceBehavior(
+                category="INFO",
+                title="802.11 control frame observed",
+                description=(
+                    "Device participated in WiFi control-plane activity such as RTS, "
+                    "CTS, ACK or Block ACK frames."
+                ),
+                raw_event_id=event.event_id,
+            )
+
+        if "data" in event.event_type:
+            if flags.get("protected"):
+                return DeviceBehavior(
+                    category="INFO",
+                    title="Protected WiFi data-frame metadata observed",
+                    description=(
+                        "Protected 802.11 data-frame metadata was observed. Payload "
+                        "content may be encrypted and not readable in Air Perimeter mode."
+                    ),
+                    raw_event_id=event.event_id,
+                )
+
+            return DeviceBehavior(
+                category="INFO",
+                title="802.11 data-frame metadata observed",
+                description="802.11 data-frame metadata was observed for this device.",
+                raw_event_id=event.event_id,
+            )
+
+        if event.event_type in {"beacon", "probe_request", "probe_response"}:
+            return None
+
+        return DeviceBehavior(
+            category="INFO",
+            title="802.11 activity observed",
+            description=(
+                "Wireless activity was observed for this device, but AirSentry has "
+                "not classified the behavior more specifically yet."
+            ),
+            raw_event_id=event.event_id,
+        )
 
     def _build_behavior(self, event: RawWirelessEvent) -> DeviceBehavior | None:
         security_profile = event.parsed_fields.get("security_profile", {})

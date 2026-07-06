@@ -86,15 +86,34 @@ class ContextPanel:
 
     @staticmethod
     def _render_visibility_side(context: CaptureContext) -> str:
-        visible_layers = ", ".join(context.visible_layers) or "unknown"
-        visible_protocols = ", ".join(context.visible_protocols) or "unknown"
+        capture_metadata = (
+            ", ".join(context.capture_metadata)
+            or ", ".join(context.visible_layers)
+            or "unknown"
+        )
+
+        network_layers = ", ".join(context.network_layers) or "unknown"
+
+        observed_protocols = (
+            ", ".join(context.observed_protocols)
+            or ", ".join(context.visible_protocols)
+            or "unknown"
+        )
+
+        frame_families = ", ".join(context.frame_families) or "not applicable"
 
         lines = [
-            "[bold]Visible Layers[/bold]",
-            visible_layers,
+            "[bold]Capture Metadata[/bold]",
+            capture_metadata,
             "",
-            "[bold]Observed Protocols / Frame Families[/bold]",
-            visible_protocols,
+            "[bold]Network Layers Observed[/bold]",
+            network_layers,
+            "",
+            "[bold]Observed Protocols / Standards[/bold]",
+            observed_protocols,
+            "",
+            "[bold]Observed Frame / Message Families[/bold]",
+            frame_families,
             "",
             "[bold]Limitations[/bold]",
         ]

@@ -13,6 +13,10 @@ class DeviceIntelligenceItem:
     hostnames: list[str] = field(default_factory=list)
     vendors: list[str] = field(default_factory=list)
     protocols: list[str] = field(default_factory=list)
+    network_layers_seen: list[str] = field(default_factory=list)
+    capture_metadata_used: list[str] = field(default_factory=list)
+    frame_families_seen: list[str] = field(default_factory=list)
+    frame_types_seen: list[str] = field(default_factory=list)
     ssids_probed: list[str] = field(default_factory=list)
     services: list[str] = field(default_factory=list)
     related_devices: list[str] = field(default_factory=list)
@@ -63,9 +67,23 @@ class DeviceIntelligenceViewModel:
 
         proximity = DeviceIntelligenceViewModel._rssi_to_proximity(avg_wifi_rssi)
 
-        recent_behaviors = device.behaviors[-5:] if device.behaviors else []
+        recent_behaviors = device.behaviors[-30:] if device.behaviors else []
 
         identity_notes = DeviceIntelligenceViewModel._build_identity_notes(device)
+
+        protocols = DeviceIntelligenceViewModel._display_protocols(
+            identity.protocols_seen
+        )
+        network_layers_seen = DeviceIntelligenceViewModel._display_layers(
+            identity.protocols_seen
+        )
+        capture_metadata_used = DeviceIntelligenceViewModel._display_capture_metadata(
+            device
+        )
+        frame_families_seen = DeviceIntelligenceViewModel._display_frame_families(
+            device
+        )
+        frame_types_seen = DeviceIntelligenceViewModel._display_frame_types(device)
 
         return DeviceIntelligenceItem(
             title=title,
@@ -75,7 +93,11 @@ class DeviceIntelligenceViewModel:
             ip_addresses=sorted(identity.ip_addresses),
             hostnames=sorted(identity.hostnames),
             vendors=sorted(identity.vendors),
-            protocols=sorted(identity.protocols_seen),
+            protocols=protocols,
+            network_layers_seen=network_layers_seen,
+            capture_metadata_used=capture_metadata_used,
+            frame_families_seen=frame_families_seen,
+            frame_types_seen=frame_types_seen,
             ssids_probed=sorted(identity.ssids_probed),
             services=sorted(identity.services),
             related_devices=sorted(device.related_devices),
@@ -213,3 +235,197 @@ class DeviceIntelligenceViewModel:
         }
 
         return priorities.get(role, 9)
+
+    @staticmethod
+    def _display_protocols(protocols: set[str]) -> list[str]:
+        protocol_map = {
+            "WIFI": "IEEE 802.11",
+            "MDNS": "mDNS",
+            "SSDP": "SSDP",
+            "UPNP": "UPnP",
+            "NETBIOS": "NetBIOS",
+            "LLMNR": "LLMNR",
+            "BLE": "BLE",
+            "BT_HCI": "Bluetooth HCI",
+        }
+
+        return [protocol_map.get(protocol, protocol) for protocol in sorted(protocols)]
+
+    @staticmethod
+    def _display_layers(protocols: set[str]) -> list[str]:
+        layers = set()
+
+        for protocol in protocols:
+            if protocol == "WIFI":
+                layers.add("OSI L2 / IEEE 802.11 wireless link")
+
+            elif protocol == "ARP":
+                layers.add("OSI L2 / ARP")
+
+            elif protocol in {"IP", "IPv4", "IPv6", "ICMP"}:
+                layers.add("OSI L3 / network layer")
+
+            elif protocol in {"TCP", "UDP"}:
+                layers.add("OSI L4 / transport layer")
+
+            elif protocol in {
+                "MDNS",
+                "DNS",
+                "DHCP",
+                "SSDP",
+                "UPNP",
+                "LLMNR",
+                "NETBIOS",
+            }:
+                layers.add("OSI L7 / application layer")
+
+            elif protocol in {"BLE", "BT_HCI"}:
+                layers.add("Bluetooth radio/controller layer")
+
+            else:
+                layers.add("uncategorized layer")
+
+        return sorted(layers)
+
+    @staticmethod
+    def _display_capture_metadata(device: DeviceProfile) -> list[str]:
+        metadata = set()
+        identity = device.identity
+
+        if "WIFI" in identity.protocols_seen:
+            metadata.add("capture timestamp")
+
+            if identity.primary_mac:
+                metadata.add("source/destination MAC")
+
+            if device.wifi_rssi_samples:
+                metadata.add("RSSI")
+                metadata.add("RadioTap")
+
+            wifi_last = device.extra.get("wifi_last", {})
+            wifi_air_profile = device.extra.get("wifi_air_profile", {})
+
+            if wifi_last.get("channel") or wifi_air_profile.get("channel"):
+                metadata.add("observed channel")
+                metadata.add("RadioTap")
+
+            if wifi_last.get("band") or wifi_air_profile.get("band"):
+                metadata.add("band")
+
+            if wifi_last.get("frequency_mhz") or wifi_air_profile.get("frequency_mhz"):
+                metadata.add("frequency")
+
+        if identity.ip_addresses:
+            metadata.add("source/destination IP")
+
+        if "BLE" in identity.protocols_seen or "BT_HCI" in identity.protocols_seen:
+            metadata.add("Bluetooth interface")
+
+            if device.bluetooth_rssi_samples:
+                metadata.add("Bluetooth RSSI")
+
+        return sorted(metadata)
+
+    @staticmethod
+    def _display_frame_families(device: DeviceProfile) -> list[str]:
+        families = set()
+
+        for event_type in device.most_common_events:
+            lowered = event_type.lower()
+
+            if "beacon" in lowered or "probe" in lowered or "management" in lowered:
+                families.add("802.11 management")
+
+            elif (
+                "rts" in lowered
+                or "cts" in lowered
+                or "ack" in lowered
+                or "control" in lowered
+            ):
+                families.add("802.11 control")
+
+            elif "data" in lowered or "qos" in lowered:
+                families.add("802.11 data")
+
+        return sorted(families)
+
+    @staticmethod
+    def _display_frame_types(device: DeviceProfile) -> list[str]:
+        if not device.most_common_events:
+            return []
+
+        names = []
+
+        for event_type, count in sorted(
+            device.most_common_events.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:8]:
+            display_name = DeviceIntelligenceViewModel._display_80211_event_type(
+                event_type
+            )
+            names.append(f"{display_name} ({count})")
+
+        return names
+
+    @staticmethod
+    def _display_80211_event_type(event_type: str) -> str:
+        type_map = {
+            # Common normalized events
+            "beacon": "Beacon",
+            "probe_request": "Probe Request",
+            "probe_response": "Probe Response",
+            # 802.11 management frame subtypes
+            "management_subtype_0": "Association Request",
+            "management_subtype_1": "Association Response",
+            "management_subtype_2": "Reassociation Request",
+            "management_subtype_3": "Reassociation Response",
+            "management_subtype_4": "Probe Request",
+            "management_subtype_5": "Probe Response",
+            "management_subtype_6": "Timing Advertisement",
+            "management_subtype_7": "Reserved Management Frame",
+            "management_subtype_8": "Beacon",
+            "management_subtype_9": "ATIM",
+            "management_subtype_10": "Disassociation",
+            "management_subtype_11": "Authentication",
+            "management_subtype_12": "Deauthentication",
+            "management_subtype_13": "Action",
+            "management_subtype_14": "Action No Ack",
+            "management_subtype_15": "Reserved Management Frame",
+            # 802.11 control frame subtypes
+            "control_subtype_0": "Reserved Control Frame",
+            "control_subtype_1": "Reserved Control Frame",
+            "control_subtype_2": "Trigger",
+            "control_subtype_3": "TACK",
+            "control_subtype_4": "Beamforming Report Poll",
+            "control_subtype_5": "VHT/HE NDP Announcement",
+            "control_subtype_6": "Control Frame Extension",
+            "control_subtype_7": "Control Wrapper",
+            "control_subtype_8": "Block ACK Request",
+            "control_subtype_9": "Block ACK",
+            "control_subtype_10": "PS-Poll",
+            "control_subtype_11": "RTS",
+            "control_subtype_12": "CTS",
+            "control_subtype_13": "ACK",
+            "control_subtype_14": "CF-End",
+            "control_subtype_15": "CF-End + CF-ACK",
+            # 802.11 data frame subtypes
+            "data_subtype_0": "Data",
+            "data_subtype_1": "Data + CF-ACK",
+            "data_subtype_2": "Data + CF-Poll",
+            "data_subtype_3": "Data + CF-ACK + CF-Poll",
+            "data_subtype_4": "Null Data",
+            "data_subtype_5": "CF-ACK",
+            "data_subtype_6": "CF-Poll",
+            "data_subtype_7": "CF-ACK + CF-Poll",
+            "data_subtype_8": "QoS Data",
+            "data_subtype_9": "QoS Data + CF-ACK",
+            "data_subtype_10": "QoS Data + CF-Poll",
+            "data_subtype_11": "QoS Data + CF-ACK + CF-Poll",
+            "data_subtype_12": "QoS Null",
+            "data_subtype_13": "Reserved Data Frame",
+            "data_subtype_14": "QoS CF-Poll",
+            "data_subtype_15": "QoS CF-ACK + CF-Poll",
+        }
+
+        return type_map.get(event_type, event_type)
