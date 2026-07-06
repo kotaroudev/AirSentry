@@ -44,9 +44,84 @@ class DeviceRegistry:
         profile.add_rssi(event.source, event.signal.rssi)
 
         self._update_identity(profile, event)
+        self._add_related_devices(profile, event)
         self._add_basic_evidence(profile, event)
         self._add_basic_risk_notes(profile, event)
         self._add_behavior(profile, event)
+
+    def _add_related_devices(
+        self, profile: DeviceProfile, event: RawWirelessEvent
+    ) -> None:
+        own_values = self._device_identity_values(profile)
+
+        related_values = [
+            event.src_mac,
+            event.src_ip,
+            event.dst_mac,
+            event.dst_ip,
+            event.bssid,
+            event.extra.get("bluetooth_address"),
+        ]
+
+        for value in related_values:
+            normalized = self._normalize_related_endpoint(value)
+
+            if not normalized:
+                continue
+
+            if normalized in own_values:
+                continue
+
+            profile.related_devices.add(normalized)
+
+    def _device_identity_values(self, profile: DeviceProfile) -> set[str]:
+        identity = profile.identity
+
+        values = {
+            profile.device_id,
+            identity.primary_mac,
+            identity.bluetooth_address,
+        }
+
+        values.update(identity.ip_addresses)
+        values.update(identity.hostnames)
+
+        return {
+            self._normalize_related_endpoint(value)
+            for value in values
+            if self._normalize_related_endpoint(value)
+        }
+
+    def _normalize_related_endpoint(self, value: str | None) -> str | None:
+        if not value:
+            return None
+
+        normalized = str(value).strip()
+
+        if not normalized or normalized == "-":
+            return None
+
+        lowered = normalized.lower()
+
+        ignored = {
+            "ff:ff:ff:ff:ff:ff",
+            "00:00:00:00:00:00",
+            "0.0.0.0",
+            "255.255.255.255",
+            "broadcast",
+            "unknown",
+        }
+
+        if lowered in ignored:
+            return None
+
+        if lowered.startswith("224.") or lowered.startswith("239."):
+            return None
+
+        if lowered.startswith("ff02:") or lowered.startswith("ff0"):
+            return None
+
+        return lowered
 
     def all_devices(self) -> list[DeviceProfile]:
         """

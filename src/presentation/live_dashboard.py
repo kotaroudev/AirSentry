@@ -53,6 +53,8 @@ class LiveDashboard:
 
         self.stream_page = 0
         self.stream_page_size = 20
+        self.device_search_query = ""
+        self.device_search_mode = False
 
     def run(self, should_stop):
         with KeyboardReader() as keyboard:
@@ -69,6 +71,32 @@ class LiveDashboard:
     def _handle_key(self, key: str | None) -> None:
         if not key:
             return
+
+        if self.device_search_mode:
+            if key in {"\n", "\r"}:
+                self.device_search_mode = False
+                self.device_page = 0
+                self.selected_device_index = 0
+                self.expanded_device_id = None
+                return
+
+            if key == "\x1b":  # ESC
+                self.device_search_mode = False
+                return
+
+            if key in {"\x7f", "\b"}:  # Backspace
+                self.device_search_query = self.device_search_query[:-1]
+                self.device_page = 0
+                self.selected_device_index = 0
+                self.expanded_device_id = None
+                return
+
+            if len(key) == 1 and key.isprintable():
+                self.device_search_query += key
+                self.device_page = 0
+                self.selected_device_index = 0
+                self.expanded_device_id = None
+                return
 
         if key == "0":
             self.current_view = "overview"
@@ -95,22 +123,86 @@ class LiveDashboard:
             self.stream_page = 0
             self.selected_device_index = 0
             self.expanded_device_id = None
+            self.device_search_query = ""
+            self.device_search_mode = False
         elif key.lower() == "q":
             self.quit_requested = True
         elif key.lower() == "h":
             self.show_context_help = not self.show_context_help
+        elif key == "/":
+            if self.current_view == "devices":
+                self.device_search_mode = True
 
     def _current_device_items(self):
         now = time.monotonic()
 
-        if now - self._device_items_cache_at < self._device_items_cache_ttl:
-            return self._device_items_cache
+        if now - self._device_items_cache_at >= self._device_items_cache_ttl:
+            devices = self.registry.all_devices()
+            self._device_items_cache = DeviceIntelligenceViewModel.build_items(devices)
+            self._device_items_cache_at = now
 
-        devices = self.registry.all_devices()
-        self._device_items_cache = DeviceIntelligenceViewModel.build_items(devices)
-        self._device_items_cache_at = now
+        items = self._device_items_cache
 
-        return self._device_items_cache
+        if self.device_search_query:
+            items = [
+                item
+                for item in items
+                if self._device_matches_search(item, self.device_search_query)
+            ]
+
+        return items
+
+    def _device_matches_search(self, item, query: str) -> bool:
+        needle = query.strip().lower()
+
+        if not needle:
+            return True
+
+        values = [
+            item.title,
+            item.role,
+            item.mac,
+            item.bluetooth_name,
+            item.bluetooth_address,
+            item.bluetooth_address_type,
+            item.signal_summary,
+            item.events_summary,
+        ]
+
+        values.extend(item.ip_addresses)
+        values.extend(item.hostnames)
+        values.extend(item.vendors)
+        values.extend(item.radios_seen)
+        values.extend(item.protocols)
+        values.extend(item.network_layers_seen)
+        values.extend(item.capture_metadata_used)
+        values.extend(item.frame_families_seen)
+        values.extend(item.frame_types_seen)
+        values.extend(item.ssids_probed)
+        values.extend(item.services)
+        values.extend(item.bluetooth_services)
+        values.extend(item.related_devices)
+        values.extend(item.risk_notes)
+        values.extend(item.identity_notes)
+        values.extend(item.security_evidence)
+
+        for behavior in item.recent_behaviors:
+            values.extend(
+                [
+                    behavior.category,
+                    behavior.title,
+                    behavior.description,
+                    behavior.protocol,
+                    behavior.event_type,
+                ]
+            )
+
+        haystack = " ".join(str(value).lower() for value in values if value)
+
+        normalized_haystack = haystack.replace("-", ":")
+        normalized_needle = needle.replace("-", ":")
+
+        return needle in haystack or normalized_needle in normalized_haystack
 
     def _current_visible_device_items(self):
         items = self._current_device_items()
@@ -152,8 +244,8 @@ class LiveDashboard:
 
     def _next_page(self) -> None:
         if self.current_view == "devices":
-            devices = self.registry.all_devices()
-            max_page = max(0, (len(devices) - 1) // self.devices_per_page)
+            items = self._current_device_items()
+            max_page = max(0, (len(items) - 1) // self.devices_per_page)
             self.device_page = min(self.device_page + 1, max_page)
             self.selected_device_index = 0
             self.expanded_device_id = None
@@ -332,7 +424,7 @@ class LiveDashboard:
             "[bold]Navigation[/bold]: "
             "[0] Overview  [1] WiFi  [2] Bluetooth  [3] Packet Stream  "
             "[4] Devices  [n] Next  [p] Previous  "
-            "[j/k] Select  [e] Expand  [r] Reset  "
+            "[j/k] Select  [e] Expand [/] Search  [r] Reset  "
             "[bold]h[/bold] Help  [q] Quit\n"
             f"[bold]Context[/bold]: {self._compact_context_line()}",
             title=f"Current View: {self.current_view}",
@@ -388,11 +480,20 @@ class LiveDashboard:
             )
 
         if self.current_view == "devices":
+            search_text = (
+                f" | Search: {self.device_search_query}"
+                if self.device_search_query
+                else ""
+            )
+
+            mode_text = " | Typing search..." if self.device_search_mode else ""
+
             return (
                 "Device Intelligence | "
                 f"Hardware: {capture_wifi} + {bluetooth} | "
                 "Mode: multi-radio device correlation | "
-                "Press h for details"
+                "Press / to search | Press h for details"
+                f"{search_text}{mode_text}"
             )
 
         return (
@@ -571,20 +672,21 @@ class LiveDashboard:
 
     def _render_device_intelligence_overview(self, items, limit: int = 4) -> Panel:
         table = Table(expand=True)
-        table.add_column("Device")
-        table.add_column("Role", no_wrap=True)
-        table.add_column("Vendor")
-        table.add_column("Signal", no_wrap=True)
-        table.add_column("Last Behavior")
+
+        table.add_column("Device", overflow="ellipsis", no_wrap=True, ratio=3)
+        table.add_column("Radios", no_wrap=True, width=9)
+        table.add_column("Role", no_wrap=True, width=10)
+        table.add_column("Signal", overflow="ellipsis", no_wrap=True, ratio=3)
+        table.add_column("Events", overflow="ellipsis", no_wrap=True, ratio=2)
+        table.add_column("Last Behavior", overflow="ellipsis", no_wrap=True, ratio=3)
 
         for item in items[:limit]:
             table.add_row(
                 item.title,
+                ", ".join(item.radios_seen) if item.radios_seen else "-",
                 item.role,
-                ", ".join(item.vendors) if item.vendors else "unknown",
-                f"{item.avg_wifi_rssi:.1f} dBm"
-                if item.avg_wifi_rssi is not None
-                else "-",
+                item.signal_summary,
+                item.events_summary,
                 self._last_behavior_label(item),
             )
 
@@ -616,13 +718,14 @@ class LiveDashboard:
             )
 
         table = Table(expand=True)
-        table.add_column("Sel", no_wrap=True)
-        table.add_column("Device")
-        table.add_column("Role", no_wrap=True)
-        table.add_column("Vendor")
-        table.add_column("Signal", no_wrap=True)
-        table.add_column("Packets", justify="right")
-        table.add_column("Last Behavior")
+        table.add_column("Sel", no_wrap=True, width=3)
+        table.add_column("Device", overflow="ellipsis", no_wrap=True, ratio=3)
+        table.add_column("Radios", no_wrap=True, width=9)
+        table.add_column("Role", no_wrap=True, width=10)
+        table.add_column("Vendor", overflow="ellipsis", no_wrap=True, ratio=2)
+        table.add_column("Signal", overflow="ellipsis", no_wrap=True, ratio=3)
+        table.add_column("Events", overflow="ellipsis", no_wrap=True, ratio=2)
+        table.add_column("Last Behavior", overflow="ellipsis", no_wrap=True, ratio=3)
 
         for index, item in enumerate(visible_items):
             marker = ">" if index == self.selected_device_index else " "
@@ -631,12 +734,11 @@ class LiveDashboard:
             table.add_row(
                 marker,
                 f"{item.title} {tag}".strip(),
+                ", ".join(item.radios_seen) if item.radios_seen else "-",
                 item.role,
                 ", ".join(item.vendors) if item.vendors else "unknown",
-                f"{item.avg_wifi_rssi:.1f} dBm"
-                if item.avg_wifi_rssi is not None
-                else "-",
-                str(item.packet_count),
+                item.signal_summary,
+                item.events_summary,
                 self._last_behavior_label(item),
             )
 
@@ -661,50 +763,6 @@ class LiveDashboard:
             return self._render_device_intelligence_interactive(items)
 
         return self._render_device_intelligence_overview(items, limit=limit)
-
-    def _endpoint_label(self, mac: str | None, ip: str | None) -> str:
-        if mac and ip:
-            return f"{mac} / {ip}"
-
-        if mac:
-            return mac
-
-        if ip:
-            return ip
-
-        return "-"
-
-    def _trace_device_name(self, trace: SmartPacketTrace, devices) -> str:
-        candidates = {
-            value.lower()
-            for value in [
-                trace.src_mac,
-                trace.src_ip,
-                trace.device_key,
-            ]
-            if value
-        }
-
-        for device in devices:
-            identity = device.identity
-
-            identity_values = {
-                value.lower()
-                for value in [
-                    identity.primary_mac,
-                    getattr(identity, "bluetooth_address", None),
-                ]
-                if value
-            }
-
-            identity_values.update(value.lower() for value in identity.ip_addresses)
-            identity_values.update(value.lower() for value in identity.hostnames)
-
-            if candidates & identity_values:
-                item = DeviceIntelligenceViewModel.build_items([device])[0]
-                return item.title
-
-        return trace.device_key or "unknown"
 
     def _endpoint_label(self, mac: str | None, ip: str | None) -> str:
         if mac and ip:
@@ -873,20 +931,42 @@ class LiveDashboard:
 
         vendor_text = ", ".join(item.vendors) if item.vendors else "unknown"
 
-        identity_line = (
-            f"Role={item.role} | MAC={item.mac or 'unknown'} | Vendor={vendor_text}"
-        )
+        identity_parts = [
+            f"Role={item.role}",
+        ]
 
-        network_line = (
-            f"IP={', '.join(item.ip_addresses) if item.ip_addresses else 'not observed'} | "
-            f"Hostnames={', '.join(item.hostnames) if item.hostnames else 'not observed'}"
-        )
+        if item.mac:
+            identity_parts.append(f"MAC={item.mac}")
 
-        signal_line = (
-            f"{item.avg_wifi_rssi:.1f} dBm ({item.proximity})"
-            if item.avg_wifi_rssi is not None
-            else "unknown / not exposed by driver yet"
-        )
+        if item.bluetooth_address:
+            identity_parts.append(f"BLE={item.bluetooth_address}")
+
+        if item.bluetooth_name:
+            identity_parts.append(f"BLE Name={item.bluetooth_name}")
+
+        if item.bluetooth_address_type:
+            identity_parts.append(f"BLE Type={item.bluetooth_address_type}")
+
+        identity_parts.append(f"Vendor={vendor_text}")
+
+        identity_line = " | ".join(identity_parts)
+
+        network_parts = [
+            f"IP={', '.join(item.ip_addresses) if item.ip_addresses else 'not observed'}",
+            f"Hostnames={', '.join(item.hostnames) if item.hostnames else 'not observed'}",
+        ]
+
+        if item.bluetooth_name:
+            network_parts.append(f"BLE Name={item.bluetooth_name}")
+
+        if item.bluetooth_services:
+            network_parts.append(
+                f"BLE Services={len(item.bluetooth_services)} observed"
+            )
+
+        network_line = " | ".join(network_parts)
+
+        signal_line = item.signal_summary
 
         protocol_line = ", ".join(item.protocols) if item.protocols else "unknown"
 
@@ -913,10 +993,17 @@ class LiveDashboard:
         )
 
         table.add_row("[bold]Device[/bold]", self._clip_text(item.title, 130))
-        table.add_row("[bold]Identity[/bold]", self._clip_text(identity_line, 130))
-        table.add_row("[bold]Network[/bold]", self._clip_text(network_line, 130))
+        table.add_row("[bold]Identity[/bold]", self._wrap_text(identity_line, 120))
+        table.add_row(
+            "[bold]Radios[/bold]",
+            ", ".join(item.radios_seen) if item.radios_seen else "unknown",
+        )
+        table.add_row(
+            "[bold]Network / Names[/bold]",
+            self._wrap_text(network_line, 120),
+        )
         table.add_row("[bold]Signal[/bold]", signal_line)
-        table.add_row("[bold]Packets[/bold]", str(item.packet_count))
+        table.add_row("[bold]Events[/bold]", item.events_summary)
 
         behavior_lines = self._format_recent_behaviors(item.recent_behaviors)
 
@@ -937,10 +1024,25 @@ class LiveDashboard:
         )
         table.add_row("[bold]Frame types[/bold]", self._clip_text(frame_type_line, 130))
 
+        if item.security_evidence:
+            table.add_row(
+                "[bold]Security evidence[/bold]",
+                "\n".join(
+                    self._wrap_text(evidence, 120)
+                    for evidence in item.security_evidence[:4]
+                ),
+            )
+
         if item.ssids_probed:
             table.add_row(
                 "[bold]SSIDs probed[/bold]",
                 self._clip_text(", ".join(item.ssids_probed), 130),
+            )
+
+        if item.bluetooth_services:
+            table.add_row(
+                "[bold]Bluetooth services[/bold]",
+                self._clip_text(", ".join(item.bluetooth_services[:6]), 130),
             )
 
         if item.services:
@@ -952,7 +1054,7 @@ class LiveDashboard:
         if item.related_devices:
             table.add_row(
                 "[bold]Related devices[/bold]",
-                self._clip_text(", ".join(item.related_devices), 130),
+                self._wrap_text(", ".join(item.related_devices), 120),
             )
 
         if item.risk_notes:

@@ -12,19 +12,35 @@ class DeviceIntelligenceItem:
     ip_addresses: list[str] = field(default_factory=list)
     hostnames: list[str] = field(default_factory=list)
     vendors: list[str] = field(default_factory=list)
+
+    radios_seen: list[str] = field(default_factory=list)
     protocols: list[str] = field(default_factory=list)
     network_layers_seen: list[str] = field(default_factory=list)
     capture_metadata_used: list[str] = field(default_factory=list)
     frame_families_seen: list[str] = field(default_factory=list)
     frame_types_seen: list[str] = field(default_factory=list)
+    security_evidence: list[str] = field(default_factory=list)
+
     ssids_probed: list[str] = field(default_factory=list)
     services: list[str] = field(default_factory=list)
+    bluetooth_services: list[str] = field(default_factory=list)
     related_devices: list[str] = field(default_factory=list)
+
     packet_count: int = 0
     event_count: int = 0
+    wifi_event_count: int = 0
+    bluetooth_event_count: int = 0
+    events_summary: str = "0"
+
     avg_wifi_rssi: float | None = None
     avg_bluetooth_rssi: float | None = None
+    signal_summary: str = "unknown"
     proximity: str = "unknown"
+
+    bluetooth_name: str | None = None
+    bluetooth_address: str | None = None
+    bluetooth_address_type: str | None = None
+
     confidence: float = 0.0
     risk_notes: list[str] = field(default_factory=list)
     recent_behaviors: list[DeviceBehavior] = field(default_factory=list)
@@ -41,18 +57,87 @@ class DeviceIntelligenceViewModel:
 
     @staticmethod
     def build_items(devices: list[DeviceProfile]) -> list[DeviceIntelligenceItem]:
-        items = []
+        pairs = []
 
         for device in devices:
-            items.append(DeviceIntelligenceViewModel._build_item(device))
+            item = DeviceIntelligenceViewModel._build_item(device)
+            pairs.append((device, item))
+
+        title_index = DeviceIntelligenceViewModel._build_title_index(pairs)
+
+        for device, item in pairs:
+            item.related_devices = DeviceIntelligenceViewModel._display_related_devices(
+                device,
+                title_index,
+            )
+
+        items = [item for _, item in pairs]
 
         return sorted(
             items,
             key=lambda item: (
                 DeviceIntelligenceViewModel._role_priority(item.role),
-                -item.packet_count,
+                -item.event_count,
             ),
         )
+
+    @staticmethod
+    def _build_title_index(
+        pairs: list[tuple[DeviceProfile, DeviceIntelligenceItem]],
+    ) -> dict[str, str]:
+        index = {}
+
+        for device, item in pairs:
+            identity = device.identity
+
+            values = [
+                device.device_id,
+                identity.primary_mac,
+                identity.bluetooth_address,
+                device.extra.get("bluetooth_address"),
+                device.extra.get("ble_address"),
+            ]
+
+            values.extend(identity.ip_addresses)
+            values.extend(identity.hostnames)
+
+            for value in values:
+                if not value:
+                    continue
+
+                normalized = str(value).strip().lower()
+
+                if normalized:
+                    index[normalized] = item.title
+
+        return index
+
+    @staticmethod
+    def _display_related_devices(
+        device: DeviceProfile,
+        title_index: dict[str, str],
+    ) -> list[str]:
+        related = []
+
+        for value in sorted(device.related_devices):
+            normalized = str(value).strip().lower()
+
+            if not normalized:
+                continue
+
+            title = title_index.get(normalized)
+
+            if title:
+                related.append(title)
+                continue
+
+            display_value = DeviceIntelligenceViewModel._display_address_as_device_name(
+                normalized
+            )
+
+            related.append(f"Observed endpoint {display_value}")
+
+        return sorted(set(related))
 
     @staticmethod
     def _build_item(device: DeviceProfile) -> DeviceIntelligenceItem:
@@ -69,6 +154,44 @@ class DeviceIntelligenceViewModel:
         title = DeviceIntelligenceViewModel._build_title(device, role, mac)
         avg_wifi_rssi = device.avg_wifi_rssi()
         avg_bluetooth_rssi = device.avg_bluetooth_rssi()
+
+        radios_seen = DeviceIntelligenceViewModel._display_radios(device)
+        wifi_event_count = DeviceIntelligenceViewModel._radio_event_count(
+            device, "WIFI"
+        )
+        bluetooth_event_count = DeviceIntelligenceViewModel._radio_event_count(
+            device, "BT"
+        )
+        signal_summary = DeviceIntelligenceViewModel._display_signal_summary(
+            avg_wifi_rssi,
+            avg_bluetooth_rssi,
+        )
+        events_summary = DeviceIntelligenceViewModel._display_events_summary(
+            device.event_count,
+            wifi_event_count,
+            bluetooth_event_count,
+        )
+        security_evidence = DeviceIntelligenceViewModel._display_security_evidence(
+            device
+        )
+
+        bluetooth_name = (
+            device.extra.get("bluetooth_name")
+            or device.extra.get("ble_name")
+            or device.extra.get("name")
+        )
+
+        bluetooth_address = (
+            identity.bluetooth_address
+            or device.extra.get("bluetooth_address")
+            or device.extra.get("ble_address")
+        )
+
+        bluetooth_address_type = device.extra.get("address_type")
+
+        bluetooth_services = DeviceIntelligenceViewModel._display_bluetooth_services(
+            device
+        )
 
         proximity = DeviceIntelligenceViewModel._rssi_to_proximity(avg_wifi_rssi)
 
@@ -98,19 +221,29 @@ class DeviceIntelligenceViewModel:
             ip_addresses=sorted(identity.ip_addresses),
             hostnames=sorted(identity.hostnames),
             vendors=sorted(identity.vendors),
+            radios_seen=radios_seen,
             protocols=protocols,
             network_layers_seen=network_layers_seen,
             capture_metadata_used=capture_metadata_used,
             frame_families_seen=frame_families_seen,
             frame_types_seen=frame_types_seen,
+            security_evidence=security_evidence,
             ssids_probed=sorted(identity.ssids_probed),
             services=sorted(identity.services),
+            bluetooth_services=bluetooth_services,
             related_devices=sorted(device.related_devices),
             packet_count=device.packet_count,
             event_count=device.event_count,
+            wifi_event_count=wifi_event_count,
+            bluetooth_event_count=bluetooth_event_count,
+            events_summary=events_summary,
             avg_wifi_rssi=avg_wifi_rssi,
             avg_bluetooth_rssi=avg_bluetooth_rssi,
+            signal_summary=signal_summary,
             proximity=proximity,
+            bluetooth_name=bluetooth_name,
+            bluetooth_address=bluetooth_address,
+            bluetooth_address_type=bluetooth_address_type,
             confidence=identity.confidence,
             risk_notes=device.risk_notes[-5:],
             recent_behaviors=recent_behaviors,
@@ -213,6 +346,163 @@ class DeviceIntelligenceViewModel:
     @staticmethod
     def _display_address_as_device_name(address: str) -> str:
         return address.replace(":", "-").upper()
+
+    @staticmethod
+    def _display_radios(device: DeviceProfile) -> list[str]:
+        radios = set()
+        protocols = device.identity.protocols_seen
+        counts = device.extra.get("radio_event_counts", {})
+
+        if "WIFI" in protocols or counts.get("WIFI"):
+            radios.add("WIFI")
+
+        if "BLE" in protocols or "BT_HCI" in protocols or counts.get("BT"):
+            radios.add("BT")
+
+        return sorted(radios)
+
+    @staticmethod
+    def _radio_event_count(device: DeviceProfile, radio: str) -> int:
+        counts = device.extra.get("radio_event_counts", {})
+
+        if radio in counts:
+            return int(counts.get(radio) or 0)
+
+        if radio == "WIFI" and "WIFI" in device.identity.protocols_seen:
+            return device.event_count
+
+        if radio == "BT" and (
+            "BLE" in device.identity.protocols_seen
+            or "BT_HCI" in device.identity.protocols_seen
+        ):
+            return device.event_count
+
+        return 0
+
+    @staticmethod
+    def _display_signal_summary(
+        avg_wifi_rssi: float | None,
+        avg_bluetooth_rssi: float | None,
+    ) -> str:
+        parts = []
+
+        if avg_wifi_rssi is not None:
+            parts.append(
+                "WiFi "
+                f"{avg_wifi_rssi:.1f} dBm "
+                f"({DeviceIntelligenceViewModel._rssi_to_proximity(avg_wifi_rssi)})"
+            )
+
+        if avg_bluetooth_rssi is not None:
+            parts.append(
+                "BT "
+                f"{avg_bluetooth_rssi:.1f} dBm "
+                f"({DeviceIntelligenceViewModel._rssi_to_proximity(avg_bluetooth_rssi)})"
+            )
+
+        return " | ".join(parts) if parts else "unknown"
+
+    @staticmethod
+    def _display_events_summary(
+        total_events: int,
+        wifi_events: int,
+        bluetooth_events: int,
+    ) -> str:
+        parts = [f"Total {total_events}"]
+
+        if wifi_events:
+            parts.append(f"WiFi {wifi_events}")
+
+        if bluetooth_events:
+            parts.append(f"BT {bluetooth_events}")
+
+        return " | ".join(parts)
+
+    @staticmethod
+    def _display_bluetooth_services(device: DeviceProfile) -> list[str]:
+        services = device.extra.get("service_uuids") or []
+
+        if isinstance(services, set):
+            services = sorted(services)
+
+        if not isinstance(services, list):
+            return []
+
+        return [str(service) for service in services if service]
+
+    @staticmethod
+    def _display_security_evidence(device: DeviceProfile) -> list[str]:
+        evidence = []
+        identity = device.identity
+
+        wifi_air_profile = device.extra.get("wifi_air_profile") or {}
+        wifi_last = device.extra.get("wifi_last") or {}
+
+        security_profile = (
+            wifi_air_profile.get("security")
+            or wifi_last.get("security")
+            or device.extra.get("wifi_security")
+        )
+
+        if isinstance(security_profile, dict):
+            security_labels = security_profile.get("security") or security_profile.get(
+                "security_labels"
+            )
+            akm_suites = security_profile.get("akm_suites")
+            pairwise_ciphers = security_profile.get("pairwise_ciphers")
+            group_cipher = security_profile.get("group_cipher")
+            is_open = security_profile.get("is_open")
+
+            if security_labels:
+                evidence.append(
+                    "WiFi security: "
+                    + ", ".join(str(value) for value in security_labels)
+                )
+
+            if akm_suites:
+                evidence.append(
+                    "WiFi AKM: " + ", ".join(str(value) for value in akm_suites)
+                )
+
+            if pairwise_ciphers:
+                evidence.append(
+                    "WiFi pairwise cipher: "
+                    + ", ".join(str(value) for value in pairwise_ciphers)
+                )
+
+            if group_cipher:
+                evidence.append(f"WiFi group cipher: {group_cipher}")
+
+            if is_open is True:
+                evidence.append("Open WiFi network advertised")
+
+        elif isinstance(security_profile, list):
+            evidence.append(
+                "WiFi security: " + ", ".join(str(value) for value in security_profile)
+            )
+
+        elif security_profile:
+            evidence.append(f"WiFi security: {security_profile}")
+
+        if "WIFI" in identity.protocols_seen:
+            for behavior in device.behaviors[-20:]:
+                text = f"{behavior.title} {behavior.description}".lower()
+
+                if "protected" in text or "encrypted" in text:
+                    evidence.append("Protected 802.11 frame metadata observed")
+                    break
+
+        if "BLE" in identity.protocols_seen or "BT_HCI" in identity.protocols_seen:
+            address_type = device.extra.get("address_type")
+
+            if address_type:
+                evidence.append(f"BLE address type: {address_type}")
+
+            evidence.append(
+                "BLE advertising metadata observed; connected payload security is not visible in Basic BLE Scan"
+            )
+
+        return sorted(set(evidence))
 
     @staticmethod
     def _infer_role(device: DeviceProfile) -> str:
@@ -396,6 +686,17 @@ class DeviceIntelligenceViewModel:
 
         if "BLE" in identity.protocols_seen or "BT_HCI" in identity.protocols_seen:
             metadata.add("Bluetooth interface")
+            metadata.add("BLE address")
+            metadata.add("advertising timestamp")
+
+            if device.extra.get("bluetooth_name"):
+                metadata.add("advertised BLE name")
+
+            if device.extra.get("service_uuids"):
+                metadata.add("service UUIDs")
+
+            if device.extra.get("manufacturer_data"):
+                metadata.add("manufacturer data")
 
             if device.bluetooth_rssi_samples:
                 metadata.add("Bluetooth RSSI")
@@ -423,7 +724,23 @@ class DeviceIntelligenceViewModel:
             elif "data" in lowered or "qos" in lowered:
                 families.add("802.11 data")
 
+        if "BLE" in device.identity.protocols_seen:
+            families.add("BLE advertisements")
+
         return sorted(families)
+
+    @staticmethod
+    def _display_event_type(event_type: str) -> str:
+        event_map = {
+            "ble_advertisement": "BLE Advertisement",
+            "ble_scan_response": "BLE Scan Response",
+            "ble_device_seen": "BLE Device Seen",
+        }
+
+        if event_type in event_map:
+            return event_map[event_type]
+
+        return DeviceIntelligenceViewModel._display_80211_event_type(event_type)
 
     @staticmethod
     def _display_frame_types(device: DeviceProfile) -> list[str]:
@@ -437,9 +754,7 @@ class DeviceIntelligenceViewModel:
             key=lambda item: item[1],
             reverse=True,
         )[:8]:
-            display_name = DeviceIntelligenceViewModel._display_80211_event_type(
-                event_type
-            )
+            display_name = DeviceIntelligenceViewModel._display_event_type(event_type)
             names.append(f"{display_name} ({count})")
 
         return names
