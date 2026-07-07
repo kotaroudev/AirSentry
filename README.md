@@ -1,218 +1,521 @@
 # AirSentry
 
-AirSentry is a Linux-first wireless auditing MVP focused on detecting available WiFi and Bluetooth hardware, reporting supported auditing modes, and preparing the system for safe wireless analysis.
+AirSentry is a Linux-first defensive visibility tool for local network and wireless auditing.
 
-This MVP is intentionally starting with hardware discovery because every future AirSentry feature depends on knowing what the current Linux host can actually audit.
+Its purpose is to help an analyst understand:
 
-AirSentry is intended for authorized cybersecurity research, defensive monitoring, lab environments, asset visibility, and security education.
+- What devices are visible from the current machine.
+- What protocols, services, hostnames, IPs, MACs and vendors are exposed.
+- What nearby WiFi and Bluetooth activity is visible.
+- What raw evidence supports each device identity.
+- Which devices or endpoints appear related.
 
-## Current MVP Features
-
-### Hardware Discovery
-
-AirSentry can list available WiFi and Bluetooth interfaces without starting packet capture or changing interface modes.
-
-Current capabilities:
-
-* Detects WiFi interfaces from Linux kernel paths.
-* Detects the current default WiFi interface.
-* Shows the WiFi MAC address.
-* Shows the WiFi interface state.
-* Shows the WiFi driver when available.
-* Reports Managed mode availability.
-* Reports Promiscuous mode availability.
-* Reports Monitor mode availability when `iw` is available.
-* Reports Monitor mode as `UNKNOWN` when precise detection is not possible.
-* Detects Bluetooth HCI interfaces.
-* Filters Bluetooth aliases such as `hci0:1`.
-* Reports basic BLE scan availability through the local HCI adapter.
-* Warns when BLE support is limited.
-* Reports when external BLE sniffing hardware is not available.
-* Lists recommended system tools.
-
-## Usage
-
-### List Detected Interfaces
-
-Use this command to list detected WiFi and Bluetooth interfaces:
-
-```bash
-sudo ./venv/bin/python run.py --interfaces
-```
-
-Short version:
-
-```bash
-sudo ./venv/bin/python run.py -l
-```
-
-Example output:
+AirSentry is not only a packet viewer. Its philosophy is:
 
 ```text
-=== AirSentry Hardware Discovery Report ===
-
---- Recommended System Tools ---
-  iw             : FOUND
-  bluetoothctl   : FOUND
-  btmon          : FOUND
-  ip             : FOUND
-
---- Wi-Fi Interfaces ---
-  [1] wlan0 [Current System Default]
-      MAC Address       : xx:xx:xx:xx:xx:xx
-      State             : up
-      Driver            : rtw88_8822ce
-      Managed Mode      : YES
-      Promiscuous Mode  : YES
-      Monitor Mode      : YES
-      Monitor Detector  : iw/nl80211
-
---- Bluetooth Interfaces ---
-  [1] hci0 [Default]
-      HCI Available     : YES
-      BLE Basic Scan    : YES
-      External BLE      : NO
-      Detection Method  : sysfs
-      [INFO] Basic BLE scanning is available through the local HCI adapter, but full BLE sniffing requires dedicated external hardware.
-
-=== End of Hardware Discovery Report ===
+Collectors observe raw events.
+Parsers normalize those events.
+The registry correlates them into device profiles.
+Smart Packet Stream preserves the technical trace.
+Device Intelligence explains what was observed.
 ```
 
-## Auditing Modes
+---
 
-### WiFi Modes
+## Current MVP
 
-#### Monitor Mode
+AirSentry currently has two live profiles:
 
-Monitor mode analyzes nearby wireless traffic at the air/radio level.
+| Profile | Command | Purpose |
+|---|---|---|
+| Local Network Visibility | `sudo ./venv/bin/python run.py` | Default mode. Observes local network protocols visible to this host. |
+| Air Perimeter | `sudo ./venv/bin/python run.py --air-perimeter` | Optional mode. Uses WiFi monitor mode and BLE scan to observe nearby wireless activity. |
 
-It can observe wireless frames from nearby networks and devices, depending on hardware support, driver support, selected channel, and permissions.
+The dashboard includes:
 
-AirSentry should prefer Monitor mode when it is available.
+- Overview
+- Local Visibility / WiFi Air Perimeter
+- Bluetooth Radar
+- Smart Packet Stream
+- Device Intelligence
+- Per-view context help
+- Device search in Device Intelligence
+- Basic related-device correlation
+- OUI/vendor lookup
+- WiFi channel hopping in Air Perimeter mode
+- BLE Basic Scan when a Bluetooth adapter is available
 
-#### Promiscuous Mode
+---
 
-Promiscuous mode analyzes packets visible inside the current local network context.
+## Installation on Kali Linux
 
-It is useful for LAN-level inspection, but it does not provide the same air-level visibility as Monitor mode.
-
-When using Promiscuous mode on encrypted WiFi networks, the network password may be required later depending on the capture and decoding workflow.
-
-#### Managed Mode
-
-Managed mode is the normal connected WiFi mode.
-
-In this mode, AirSentry can only analyze traffic visible to the host, such as packets addressed to the local machine and broadcast traffic.
-
-Managed mode does not capture arbitrary wireless traffic from other nearby devices.
-
-### Bluetooth Modes
-
-#### HCI Mode
-
-HCI mode uses the local Bluetooth controller interface exposed by Linux.
-
-It can inspect local Bluetooth controller activity, host-controller events, and basic Bluetooth information available through the system Bluetooth stack.
-
-#### BLE Mode
-
-BLE mode focuses on Bluetooth Low Energy discovery.
-
-When only the local HCI adapter is available, AirSentry can perform basic BLE scanning, mainly useful for detecting nearby BLE advertising activity.
-
-This local BLE mode is limited. Full BLE sniffing, especially deeper connection-level BLE analysis, generally requires dedicated external BLE sniffing hardware.
-
-## Recommended System Tools
-
-AirSentry uses low-level Linux interfaces first and recommended system tools only when they improve detection accuracy.
-
-These tools are not Python packages and should be installed with the system package manager.
-
-### Debian / Ubuntu / Kali
+Clone the project:
 
 ```bash
-sudo apt update
-sudo apt install -y iw bluez iproute2
+git clone https://github.com/kotaroudev/AirSentry.git
+cd AirSentry
 ```
 
-### Fedora
+Create a Python virtual environment:
 
 ```bash
-sudo dnf install -y iw bluez iproute
+python3 -m venv venv
+source venv/bin/activate
 ```
-
-### Alpine
-
-```bash
-sudo apk add iw bluez iproute2
-```
-
-Recommended tools:
-
-* `iw`: improves WiFi capability detection, especially Monitor mode support.
-* `bluez`: provides the Linux Bluetooth stack and related tools.
-* `iproute2` / `iproute`: provides modern Linux networking utilities.
-
-AirSentry should still start without these tools, but some capabilities may be reported as `UNKNOWN`.
-
-## Python Requirements
 
 Install Python dependencies:
 
 ```bash
-./venv/bin/pip install -r requirements.txt
+pip install -r requirements.txt
 ```
 
-Current Python dependencies:
-
-```text
-scapy==2.7.0
-ruff
-```
-
-## Development
-
-Format Python files with Ruff:
+Install recommended system tools:
 
 ```bash
-./venv/bin/ruff format .
+sudo apt update
+sudo apt install -y iw tcpdump bluez wireless-tools
 ```
 
-Run lint fixes:
+AirSentry requires root privileges because it uses packet capture and wireless interface operations.
+
+---
+
+## Commands
+
+AirSentry currently keeps the CLI minimal for the MVP.
+
+### 1. Show help
 
 ```bash
-./venv/bin/ruff check . --fix
+./venv/bin/python run.py --help
 ```
 
-## Current Project Structure
+Shows the available profiles and dashboard keys.
+
+---
+
+### 2. Default mode: Local Network Visibility
+
+```bash
+sudo ./venv/bin/python run.py
+```
+
+This is the default profile.
+
+It listens on the system default local/WiFi interface in managed/promiscuous visibility mode and starts Basic BLE Scan when Bluetooth is available.
+
+It observes local protocols visible to this host, including:
+
+- ARP
+- DHCP
+- DHCPv6
+- DNS
+- mDNS
+- SSDP / UPnP
+- LLMNR
+- NetBIOS
+- IPv6 Neighbor Discovery
+- WS-Discovery when available
+
+### What Local Visibility can see
+
+Local Visibility can observe:
+
+- Traffic to/from this machine
+- Broadcast traffic
+- Multicast traffic
+- Local discovery protocols
+- Some additional traffic when promiscuous capture is effective
+
+### What Local Visibility may not see
+
+Local Visibility does not guarantee full discovery of every LAN device.
+
+It may miss:
+
+- Silent devices
+- Sleeping phones
+- Some unicast traffic between other clients
+- Devices isolated by the access point
+- Traffic hidden by switch/AP behavior
+- WiFi RSSI/signal strength from local IP traffic
+
+Signal strength is only available when a device is observed through WiFi monitor mode or Bluetooth RSSI.
+
+---
+
+### 3. Air Perimeter mode
+
+```bash
+sudo ./venv/bin/python run.py --air-perimeter
+```
+
+This profile creates a temporary monitor interface and observes nearby WiFi activity in the air.
+
+It captures:
+
+- WiFi access points
+- WiFi clients/stations
+- Beacons
+- Probe requests
+- Probe responses
+- Control frames
+- Data-frame metadata
+- Protected frame metadata
+- RSSI when available through RadioTap
+- Channel and band information
+- WiFi security metadata when visible
+- BLE advertisements when Bluetooth is available
+
+Air Perimeter uses channel hopping to improve coverage across common 2.4 GHz and 5 GHz channels.
+
+### What Air Perimeter may not capture
+
+Air Perimeter may miss packets because:
+
+- A single adapter listens to one channel at a time
+- Channel hopping improves coverage but is not perfect
+- Protected WiFi payloads may be encrypted
+- Some drivers may not support simultaneous managed and monitor operation
+- BLE Basic Scan sees advertising metadata only, not full connected BLE payloads
+
+---
+
+## Dashboard navigation
+
+Inside the dashboard:
 
 ```text
-.
-├── README.md
-├── requirements-system.md
-├── requirements.txt
-├── run.py
-└── src
-    ├── core
-    │   ├── __init__.py
-    │   ├── mode_descriptions.py
-    │   └── models.py
-    ├── infrastructure
-    │   ├── bluetooth_capability_detector.py
-    │   ├── hardware_reader.py
-    │   ├── __init__.py
-    │   └── wifi_capability_detector.py
-    ├── presentation
-    │   └── console_reporter.py
-    └── use_cases
-        ├── discover_hardware.py
-        └── __init__.py
+0       Overview
+1       Local Visibility or WiFi Air Perimeter
+2       Bluetooth Radar
+3       Smart Packet Stream
+4       Device Intelligence
+
+n / p   Next / previous page
+j / k   Move down / up in Device Intelligence
+e       Expand/collapse selected device card
+/       Search in Device Intelligence only
+r       Reset page/search/selection
+h       Show context/help for the current view
+q       Quit dashboard
 ```
 
-## Security Notice
+---
 
-AirSentry is designed for authorized wireless audits, defensive monitoring, lab environments, asset visibility, cybersecurity education, and research on owned or permitted networks.
+## Context help
 
-Do not use AirSentry to monitor, intercept, disrupt, attack, or analyze networks or devices without authorization.
+Press:
 
-This MVP currently performs hardware discovery only. Packet capture, packet analysis, dashboard views, and device correlation will be added incrementally.
+```text
+h
+```
+
+to open the context panel for the current view.
+
+The context panel explains:
+
+- Active profile
+- Active hardware
+- Capture mode
+- Visible protocols
+- Capture metadata
+- Network layers
+- Frame/event families
+- Payload visibility
+- Current limitations
+
+This is important because each view has different visibility depending on the active profile.
+
+Examples:
+
+- Local Visibility observes local managed/promiscuous traffic.
+- Air Perimeter observes 802.11 monitor-mode traffic.
+- Bluetooth Radar observes BLE advertising metadata.
+- Smart Packet Stream shows normalized technical events.
+- Device Intelligence correlates evidence into device profiles.
+
+---
+
+## Search
+
+Search is currently available only in:
+
+```text
+Device Intelligence
+```
+
+Go to view:
+
+```text
+4
+```
+
+Then press:
+
+```text
+/
+```
+
+You can search by:
+
+- MAC address
+- IP address
+- hostname
+- service name
+- vendor
+- protocol
+- device title
+- related device
+- behavior text
+
+Examples:
+
+```text
+/ 192.168
+/ spotify
+/ googlecast
+/ huawei
+/ mdns
+/ be:42
+```
+
+---
+
+## Main views
+
+### Local Visibility
+
+Shows devices inferred from visible local network traffic.
+
+Typical data:
+
+- Device
+- MAC
+- Vendor
+- IPs
+- Names
+- Protocols
+- Services
+- Events
+- Last behavior
+
+Services such as:
+
+```text
+_spotify-connect._tcp.local
+_googlecast._tcp.local
+urn:schemas-upnp-org:...
+```
+
+are not device names. They are services, domains or discovery names observed in traffic.
+
+A device name is shown only when AirSentry has stronger identity evidence, such as:
+
+- DHCP hostname
+- mDNS hostname
+- LLMNR hostname
+- NetBIOS name
+- A correlated device title
+
+Otherwise, AirSentry uses the MAC address.
+
+---
+
+### WiFi Air Perimeter
+
+Shows nearby WiFi activity observed through monitor mode.
+
+It includes:
+
+- Access points
+- Clients/stations
+- SSIDs
+- MAC addresses
+- RSSI
+- Channel
+- Band
+- Security metadata
+- Packet/event counts
+
+---
+
+### Bluetooth Radar
+
+Shows BLE devices observed through the local Bluetooth adapter.
+
+It includes:
+
+- BLE address
+- Advertised BLE name when available
+- RSSI when available
+- Address type
+- Services when advertised
+- Event count
+- Last seen
+
+Many BLE devices use random/private addresses, so identity confidence can be limited.
+
+---
+
+### Smart Packet Stream
+
+Shows the technical trace of normalized events.
+
+It is the best view for validating what AirSentry actually observed.
+
+Typical columns:
+
+- Time
+- Radio
+- Protocol
+- Event type
+- Device
+- Source
+- Destination
+- Length
+- RSSI
+- Channel/Band
+- Flags
+- Summary
+
+Smart Packet Stream preserves raw technical summaries from parsers so the analyst can inspect the evidence behind Device Intelligence.
+
+---
+
+### Device Intelligence
+
+Device Intelligence is the main correlation view.
+
+It combines available evidence into device cards showing:
+
+- Device title
+- Identity
+- Radios seen
+- IPs and hostnames
+- Signal summary when available
+- Event counts
+- Recent behaviors
+- Protocols seen
+- Network layers
+- Capture metadata
+- Frame/event types
+- Security evidence
+- Services
+- Related devices
+- Risk notes
+- Identity notes
+
+---
+
+## Related devices and observed endpoints
+
+Related devices are built from observed relationships such as:
+
+- Source MAC / destination MAC
+- Source IP / destination IP
+- BSSID
+- Local traffic endpoints
+- Protocol interactions
+
+When AirSentry can resolve the endpoint to another known device, it displays the related device name.
+
+When it cannot resolve the endpoint yet, it displays it as an observed endpoint.
+
+Example:
+
+```text
+Observed endpoint 77-E0-56-15-F0-11
+```
+
+This means AirSentry observed that endpoint as a destination, BSSID, or related network endpoint, but it has not collected enough evidence yet to promote it into a fully identified device card.
+
+Observed endpoints are useful evidence, but they should not be treated as fully identified devices.
+
+---
+
+## Current limitations
+
+AirSentry is passive/best-effort in the current MVP.
+
+Important limitations:
+
+- Local Visibility does not guarantee discovery of every LAN device.
+- Managed/promiscuous capture may not see all client-to-client traffic.
+- Phones and modern devices may stay quiet until an app triggers local discovery.
+- WiFi RSSI is only available through monitor-mode WiFi observations.
+- BLE Basic Scan only sees advertising metadata.
+- Device names depend on protocols that reveal identity.
+- OUI/vendor lookup is soft evidence and can be wrong with randomized MACs.
+- Related devices may include unresolved observed endpoints.
+- Live mode currently keeps data in memory only.
+
+---
+
+## Working features
+
+Current working features include:
+
+- Local Network Visibility profile
+- Air Perimeter profile
+- Live terminal dashboard
+- WiFi monitor capture
+- WiFi channel hopping
+- BLE Basic Scan
+- Smart Packet Stream
+- Device Intelligence
+- Local protocol parsing
+- ARP, DHCP, DHCPv6, DNS, mDNS, SSDP/UPnP, LLMNR, NetBIOS and IPv6 NDP visibility
+- OUI/vendor lookup
+- RSSI interpretation for WiFi monitor and BLE when available
+- WiFi security metadata extraction when visible
+- Recent behavior timeline
+- Security evidence
+- Identity notes
+- Related devices and observed endpoints
+- Search in Device Intelligence
+- Per-view context help
+
+---
+
+## Next milestone
+
+The next major milestone is persistence and deeper correlation.
+
+Planned work:
+
+- Persistent SQLite storage
+- Full filters for each view
+- Better per-view layouts
+- Faster render performance
+- More efficient Device Intelligence caching
+- Historical device timelines
+- Session comparison
+- Exportable reports
+- Cross-profile correlation between Local Visibility and Air Perimeter
+
+Persistence is the biggest next feature.
+
+Once AirSentry stores observations over time, it can combine both profiles:
+
+```text
+Local Visibility:
+  IPs, hostnames, services, DNS/mDNS/SSDP/DHCP evidence
+
+Air Perimeter:
+  WiFi RSSI, channels, SSIDs, BSSIDs, probes, nearby wireless behavior
+
+Bluetooth Radar:
+  BLE names, BLE addresses, advertised services, proximity hints
+```
+
+That will allow AirSentry to build a more complete report of:
+
+- Devices on the local network
+- Devices nearby in the wireless spectrum
+- Relationships between local devices and observed endpoints
+- Identity changes over time
+- Services exposed or queried
+- Wireless behavior and signal evidence
+
+This is the foundation for a full local network and wireless environment intelligence report.
