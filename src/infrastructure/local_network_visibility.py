@@ -49,16 +49,7 @@ class LocalNetworkVisibilityCollector:
             prn=self._handle_packet,
             store=False,
             promisc=self.promiscuous,
-            filter=(
-                "arp or "
-                "icmp6 or "
-                "udp port 67 or udp port 68 or "
-                "udp port 546 or udp port 547 or "
-                "udp port 53 or udp port 5353 or "
-                "udp port 1900 or udp port 3702 or "
-                "udp port 5355 or "
-                "udp port 137 or udp port 138"
-            ),
+            filter="arp or udp or icmp6",
         )
         self._sniffer.start()
 
@@ -168,22 +159,14 @@ class LocalNetworkVisibilityCollector:
         )
 
     def _handle_packet(self, packet) -> None:
-        event = self._parse_packet(packet)
+        try:
+            event = self._parse_packet(packet)
 
-        if event:
-            if event.protocol in {"MDNS", "SSDP", "LLMNR", "NETBIOS"}:
-                print(
-                    "[local-visibility]",
-                    event.protocol,
-                    event.event_type,
-                    event.src_mac,
-                    event.src_ip,
-                    "->",
-                    event.dst_mac,
-                    event.dst_ip,
-                    event.raw_summary,
-                )
-            self.event_bus.publish(event)
+            if event:
+                self.event_bus.publish(event)
+
+        except Exception as error:
+            print(f"[local-visibility parser error] {type(error).__name__}: {error}")
 
     def _parse_packet(self, packet) -> RawWirelessEvent | None:
         if ARP in packet:
@@ -261,12 +244,13 @@ class LocalNetworkVisibilityCollector:
 
         event_type = "arp_reply" if int(arp.op) == 2 else "arp_request"
 
+        fields["src_ip"] = arp.psrc
+        fields["dst_ip"] = arp.pdst
+
         return RawWirelessEvent(
             **fields,
             protocol="ARP",
             event_type=event_type,
-            src_ip=arp.psrc,
-            dst_ip=arp.pdst,
             parsed_fields={
                 "arp": {
                     "op": int(arp.op),
@@ -333,7 +317,6 @@ class LocalNetworkVisibilityCollector:
 
         query_name = None
         response_name = None
-        payload_preview = self._raw_text(packet)[:300]
 
         if DNS in packet:
             dns = packet[DNS]
@@ -344,7 +327,7 @@ class LocalNetworkVisibilityCollector:
             if dns.an:
                 response_name = self._decode_dns_name(getattr(dns.an, "rrname", None))
 
-        hostname = response_name or query_name
+        observed_name = response_name or query_name
 
         full_event_type = (
             f"{event_type}_response" if response_name else f"{event_type}_query"
@@ -357,29 +340,28 @@ class LocalNetworkVisibilityCollector:
             **fields,
             protocol=protocol,
             event_type=full_event_type,
-            hostname=hostname,
-            service_name=hostname,
+            hostname=None,
+            service_name=observed_name,
             parsed_fields={
                 protocol.lower(): {
                     "query_name": query_name,
                     "response_name": response_name,
+                    "observed_name": observed_name,
                     "sport": sport,
                     "dport": dport,
-                    "payload_preview": payload_preview,
                     "scapy_decoded_dns": DNS in packet,
                 }
             },
             extra={
                 "query_name": query_name,
                 "response_name": response_name,
-                "payload_preview": payload_preview,
+                "observed_name": observed_name,
                 "sport": sport,
                 "dport": dport,
             },
             raw_summary=(
                 f"{protocol} {full_event_type} ports={sport}->{dport}"
-                + (f" name={hostname}" if hostname else "")
-                + (" decoded_dns=false" if DNS not in packet else "")
+                + (f" name={observed_name}" if observed_name else "")
             ),
             raw_layers=["Ethernet", "IP", "UDP", protocol],
         )

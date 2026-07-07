@@ -50,6 +50,7 @@ class LiveDashboard:
         self._device_items_cache = []
         self._device_items_cache_at = 0.0
         self._device_items_cache_ttl = 0.75
+        self.stream_radio_filter = None
 
         self.stream_page = 0
         self.stream_page_size = 20
@@ -67,6 +68,16 @@ class LiveDashboard:
                     key = keyboard.read_key()
                     self._handle_key(key)
                     live.update(self._render())
+
+    def _current_stream_traces(self):
+        if not self.stream_radio_filter:
+            return self.packet_traces
+
+        return [
+            trace
+            for trace in self.packet_traces
+            if trace.radio == self.stream_radio_filter
+        ]
 
     def _handle_key(self, key: str | None) -> None:
         if not key:
@@ -125,6 +136,7 @@ class LiveDashboard:
             self.expanded_device_id = None
             self.device_search_query = ""
             self.device_search_mode = False
+            self.stream_radio_filter = None
         elif key.lower() == "q":
             self.quit_requested = True
         elif key.lower() == "h":
@@ -132,6 +144,12 @@ class LiveDashboard:
         elif key == "/":
             if self.current_view == "devices":
                 self.device_search_mode = True
+        elif key.lower() == "l":
+            if self.current_view == "stream":
+                self.stream_radio_filter = (
+                    None if self.stream_radio_filter == "LOCAL" else "LOCAL"
+                )
+                self.stream_page = 0
 
     def _current_device_items(self):
         now = time.monotonic()
@@ -280,7 +298,7 @@ class LiveDashboard:
             self.expanded_device_id = None
 
         elif self.current_view == "stream":
-            total = len(self.packet_traces)
+            total = len(self._current_stream_traces())
             max_page = max(0, (total - 1) // self.stream_page_size)
             self.stream_page = min(self.stream_page + 1, max_page)
 
@@ -293,17 +311,29 @@ class LiveDashboard:
         elif self.current_view == "stream":
             self.stream_page = max(0, self.stream_page - 1)
 
-    def _render_local_network_visibility(self, devices, limit: int = 12) -> Panel:
-        table = Table(expand=True)
+    def _last_behavior_full_label(self, item) -> str:
+        if not item.recent_behaviors:
+            return "-"
 
-        table.add_column("Device", overflow="ellipsis", no_wrap=True, ratio=3)
-        table.add_column("MAC", overflow="ellipsis", no_wrap=True, width=18)
-        table.add_column("IP", overflow="ellipsis", no_wrap=True, ratio=2)
-        table.add_column("Names", overflow="ellipsis", no_wrap=True, ratio=3)
-        table.add_column("Protocols", overflow="ellipsis", no_wrap=True, ratio=3)
-        table.add_column("Services", overflow="ellipsis", no_wrap=True, ratio=3)
+        behavior = item.recent_behaviors[-1]
+
+        return self._wrap_text(
+            f"[{behavior.category}] {behavior.title}: {behavior.description}",
+            90,
+        )
+
+    def _render_local_network_visibility(self, devices, limit: int = 12) -> Panel:
+        table = Table(expand=True, show_lines=True)
+
+        table.add_column("Device", overflow="fold", no_wrap=False, ratio=3)
+        table.add_column("MAC", overflow="fold", no_wrap=False, width=18)
+        table.add_column("Vendor", overflow="fold", no_wrap=False, ratio=2)
+        table.add_column("IP", overflow="fold", no_wrap=False, ratio=2)
+        table.add_column("Names", overflow="fold", no_wrap=False, ratio=3)
+        table.add_column("Protocols", overflow="fold", no_wrap=False, ratio=3)
+        table.add_column("Services", overflow="fold", no_wrap=False, ratio=4)
         table.add_column("Events", justify="right", width=7)
-        table.add_column("Last Behavior", overflow="ellipsis", no_wrap=True, ratio=3)
+        table.add_column("Last Behavior", overflow="fold", no_wrap=False, ratio=4)
 
         local_protocols = {
             "ARP",
@@ -322,13 +352,19 @@ class LiveDashboard:
 
         rows = []
 
+        items = DeviceIntelligenceViewModel.build_items(devices)
+        item_by_id = {item.device_id: item for item in items}
+
         for device in devices:
             protocols = device.identity.protocols_seen
 
             if not protocols & local_protocols:
                 continue
 
-            item = DeviceIntelligenceViewModel.build_items([device])[0]
+            item = item_by_id.get(device.device_id)
+
+            if not item:
+                continue
 
             rows.append(
                 (
@@ -343,12 +379,13 @@ class LiveDashboard:
             table.add_row(
                 item.title,
                 item.mac or "-",
-                ", ".join(item.ip_addresses) if item.ip_addresses else "-",
-                ", ".join(item.hostnames) if item.hostnames else "-",
-                ", ".join(item.protocols) if item.protocols else "-",
-                ", ".join(item.services[:3]) if item.services else "-",
+                ", ".join(item.vendors) if item.vendors else "-",
+                "\n".join(item.ip_addresses) if item.ip_addresses else "-",
+                "\n".join(item.hostnames) if item.hostnames else "-",
+                "\n".join(item.protocols) if item.protocols else "-",
+                "\n".join(item.services) if item.services else "-",
                 str(item.event_count),
-                self._last_behavior_label(item),
+                self._last_behavior_full_label(item),
             )
 
         if not rows:
@@ -530,7 +567,7 @@ class LiveDashboard:
             "[bold]Navigation[/bold]: "
             f"[0] Overview  [1] {'Local' if self._is_local_visibility_profile() else 'WiFi'}  "
             "[2] Bluetooth  [3] Packet Stream  "
-            "[4] Devices  [n] Next  [p] Previous  "
+            "[4] Devices  [n] Next  [p] Previous  [l] Local filter  "
             "[j/k] Select  [e] Expand [/] Search  [r] Reset  "
             "[bold]h[/bold] Help  [q] Quit\n"
             f"[bold]Context[/bold]: {self._compact_context_line()}",
@@ -721,9 +758,9 @@ class LiveDashboard:
         table.add_column("Radio", no_wrap=True, width=5)
         table.add_column("Proto", no_wrap=True, width=7)
         table.add_column("Type", overflow="ellipsis", no_wrap=True, width=18)
-        table.add_column("Device", overflow="ellipsis", no_wrap=True, width=28)
-        table.add_column("Src", overflow="ellipsis", no_wrap=True, width=20)
-        table.add_column("Dst", overflow="ellipsis", no_wrap=True, width=20)
+        table.add_column("Device", overflow="fold", no_wrap=False, ratio=3)
+        table.add_column("Src", overflow="fold", no_wrap=False, ratio=3)
+        table.add_column("Dst", overflow="fold", no_wrap=False, ratio=3)
         table.add_column("Len", justify="right", width=5)
         table.add_column("RSSI", justify="right", width=5)
         table.add_column("CH/Band", justify="right", width=9)
@@ -738,7 +775,7 @@ class LiveDashboard:
             no_wrap=not summary_full_mode,
         )
 
-        traces = self.packet_traces
+        traces = self._current_stream_traces()
 
         if self.current_view == "stream":
             reversed_traces = list(reversed(traces))
@@ -770,9 +807,9 @@ class LiveDashboard:
                 trace.radio,
                 trace.protocol,
                 trace.event_type,
-                self._clip_text(device_name, 28),
-                self._clip_text(src, 20),
-                self._clip_text(dst, 20),
+                device_name,
+                src,
+                dst,
                 str(trace.length) if trace.length is not None else "-",
                 str(trace.rssi) if trace.rssi is not None else "-",
                 channel_band,
@@ -786,12 +823,16 @@ class LiveDashboard:
         if self.current_view == "stream":
             total_pages = max(
                 1,
-                (len(self.packet_traces) + self.stream_page_size - 1)
-                // self.stream_page_size,
+                (len(traces) + self.stream_page_size - 1) // self.stream_page_size,
+            )
+            filter_text = (
+                f" | Filter {self.stream_radio_filter}"
+                if self.stream_radio_filter
+                else ""
             )
             title = (
                 f"Smart Packet Stream | Page {self.stream_page + 1}/{total_pages} "
-                f"| Buffer {len(self.packet_traces)} traces"
+                f"| Buffer {len(traces)} traces{filter_text}"
             )
 
         return Panel(table, title=title)

@@ -311,6 +311,9 @@ class DeviceIntelligenceViewModel:
                 bluetooth_address
             )
 
+        if role in {"LOCAL DEVICE", "UNKNOWN"}:
+            return mac
+
         return f"{role} {mac}"
 
     @staticmethod

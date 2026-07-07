@@ -216,6 +216,53 @@ class DeviceRegistry:
     def _normalize_key(self, value: str) -> str:
         return value.strip().lower()
 
+    def _should_store_hostname(self, event: RawWirelessEvent) -> bool:
+        protocol = (event.protocol or "").upper()
+        hostname = (event.hostname or "").strip()
+
+        if not hostname:
+            return False
+
+        lowered = hostname.lower()
+
+        if lowered.startswith("_"):
+            return False
+
+        if lowered in {"local", "lan", "home"}:
+            return False
+
+        if protocol in {"DHCP", "NETBIOS"}:
+            return True
+
+        if protocol in {"MDNS", "LLMNR"}:
+            return lowered.endswith(".local") and not lowered.startswith("_")
+
+        return False
+
+    def _should_store_ip(self, ip: str | None) -> bool:
+        if not ip:
+            return False
+
+        lowered = str(ip).strip().lower()
+
+        ignored = {
+            "0.0.0.0",
+            "255.255.255.255",
+            "::",
+            "::1",
+        }
+
+        if lowered in ignored:
+            return False
+
+        if lowered.startswith("224.") or lowered.startswith("239."):
+            return False
+
+        if lowered.startswith("ff02:") or lowered.startswith("ff0"):
+            return False
+
+        return True
+
     def _update_identity(self, profile: DeviceProfile, event: RawWirelessEvent) -> None:
         """
         Updates identity hints from a raw event.
@@ -236,10 +283,10 @@ class DeviceRegistry:
         if bluetooth_address and not profile.identity.bluetooth_address:
             profile.identity.bluetooth_address = bluetooth_address
 
-        if event.src_ip:
+        if event.src_ip and self._should_store_ip(event.src_ip):
             profile.identity.ip_addresses.add(event.src_ip)
 
-        if event.hostname:
+        if event.hostname and self._should_store_hostname(event):
             profile.identity.hostnames.add(event.hostname)
 
         if event.vendor:
